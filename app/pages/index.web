@@ -1,0 +1,8 @@
+@page "/"
+
+@let name: string = "WebScript"
+
+<main>
+  <h1>Hello {name}</h1>
+  <p>This page is served directly from app/pages/index.web.</p>
+</main>
