@@ -5,10 +5,19 @@
 @let greeting = "Hello " + name
 @let ready = visits == 5 && name != "Guest"
 @let boosted = (visits + 1) > 5
-@let posts: string[] = ["One", "Two", "Three"]
+@let author = {
+  name: "Ada"
+  role: "admin"
+}
+@let posts = [
+  { title: "Intro", slug: "intro", featured: true },
+  { title: "Launch", slug: "launch", featured: false },
+  { title: "Roadmap", slug: "roadmap", featured: false }
+]
 
 <main>
   <h1>{greeting}</h1>
+  <p>Author: {author.name} ({author.role})</p>
   <p>Visit count: {visits + 1}</p>
 
   @if ready && !false {
@@ -18,9 +27,12 @@
   }
 
   <h2>Posts</h2>
-  <PostPreview title={"Pinned for " + name} rank={visits - 4} featured={boosted || ready} />
+  <PostPreview title={"Pinned for " + author.name} rank={visits - 4} featured={boosted || ready} />
 
   @for post in posts {
-    <PostPreview title={post} featured={post == "One" || boosted} />
+    <PostPreview
+      title={post.title}
+      featured={post.featured}
+    />
   }
 </main>

@@ -125,7 +125,7 @@ fn evaluate_path(
         ));
     };
 
-    let Some(value) = env.get(first).cloned() else {
+    let Some(mut value) = env.get(first).cloned() else {
         return Err(Diagnostic::error(
             Span::identifier(line, column, first),
             format!("unknown expression `{first}`"),
@@ -133,15 +133,33 @@ fn evaluate_path(
         ));
     };
 
-    if path.len() == 1 {
-        return Ok(value);
+    for field in &path[1..] {
+        value = match value {
+            Value::Object(fields) => {
+                let Some(field_value) = fields.get(field).cloned() else {
+                    return Err(Diagnostic::error(
+                        Span::identifier(line, column, &path.join(".")),
+                        format!("unknown property `{field}` on `{}`", path.join(".")),
+                        None,
+                    ));
+                };
+                field_value
+            }
+            other => {
+                return Err(Diagnostic::error(
+                    Span::identifier(line, column, &path.join(".")),
+                    format!(
+                        "property access `{}` requires `object`, found `{}`",
+                        path.join("."),
+                        other.type_name()
+                    ),
+                    Some("only object values have fields".to_string()),
+                ));
+            }
+        };
     }
 
-    Err(Diagnostic::error(
-        Span::identifier(line, column, &path.join(".")),
-        format!("property access `{}` is not supported yet", path.join(".")),
-        Some("object values are coming in the next language phase".to_string()),
-    ))
+    Ok(value)
 }
 
 fn evaluate_binary(
@@ -261,8 +279,14 @@ enum TokenKind {
     Plus,
     Minus,
     Dot,
+    Colon,
+    Comma,
     LParen,
     RParen,
+    LBrace,
+    RBrace,
+    LBracket,
+    RBracket,
     OrOr,
     AndAnd,
     EqEq,
@@ -374,8 +398,14 @@ fn tokenize(source: &str, line: usize, column: usize) -> Result<Vec<Token>, Diag
                 '+' => Some((TokenKind::Plus, 1)),
                 '-' => Some((TokenKind::Minus, 1)),
                 '.' => Some((TokenKind::Dot, 1)),
+                ':' => Some((TokenKind::Colon, 1)),
+                ',' => Some((TokenKind::Comma, 1)),
                 '(' => Some((TokenKind::LParen, 1)),
                 ')' => Some((TokenKind::RParen, 1)),
+                '{' => Some((TokenKind::LBrace, 1)),
+                '}' => Some((TokenKind::RBrace, 1)),
+                '[' => Some((TokenKind::LBracket, 1)),
+                ']' => Some((TokenKind::RBracket, 1)),
                 '<' => Some((TokenKind::Lt, 1)),
                 '>' => Some((TokenKind::Gt, 1)),
                 _ => None,
@@ -511,20 +541,123 @@ impl ExprParser {
             }
             TokenKind::LParen => {
                 let expr = self.parse_or()?;
-                let Some(close) = self.advance().cloned() else {
-                    return Err(Diagnostic::error(token.span, "expected `)`", None));
-                };
-                if close.kind != TokenKind::RParen {
-                    return Err(Diagnostic::error(close.span, "expected `)`", None));
-                }
+                self.expect(TokenKind::RParen, "expected `)`", token.span.clone())?;
                 Ok(expr)
             }
+            TokenKind::LBrace => self.parse_object_literal(token.span),
+            TokenKind::LBracket => self.parse_array_literal(token.span),
             _ => Err(Diagnostic::error(
                 token.span,
                 format!("expected expression, found `{}`", token.lexeme),
                 None,
             )),
         }
+    }
+
+    fn parse_object_literal(&mut self, open_span: Span) -> Result<Expr, Diagnostic> {
+        let mut fields = BTreeMap::new();
+
+        if self.match_token(TokenKind::RBrace) {
+            return Ok(Expr::Literal(Value::Object(fields)));
+        }
+
+        loop {
+            let Some(name) = self.advance().cloned() else {
+                return Err(Diagnostic::error(
+                    open_span,
+                    "expected object field name",
+                    None,
+                ));
+            };
+            if name.kind != TokenKind::Identifier {
+                return Err(Diagnostic::error(
+                    name.span,
+                    "expected object field name",
+                    None,
+                ));
+            }
+
+            self.expect(
+                TokenKind::Colon,
+                "expected `:` after object field name",
+                name.span,
+            )?;
+            let value = self.parse_or()?;
+            let Expr::Literal(value) = value else {
+                return Err(Diagnostic::error(
+                    self.previous_span(),
+                    "object literal fields must be literal values",
+                    Some("field expressions will come with helper functions".to_string()),
+                ));
+            };
+            fields.insert(name.lexeme, value);
+
+            if self.match_token(TokenKind::Comma) {
+                if self.match_token(TokenKind::RBrace) {
+                    break;
+                }
+                continue;
+            }
+
+            if self
+                .peek()
+                .is_some_and(|token| token.kind == TokenKind::Identifier)
+            {
+                continue;
+            }
+
+            self.expect(
+                TokenKind::RBrace,
+                "expected `}` after object literal",
+                open_span,
+            )?;
+            break;
+        }
+
+        Ok(Expr::Literal(Value::Object(fields)))
+    }
+
+    fn parse_array_literal(&mut self, open_span: Span) -> Result<Expr, Diagnostic> {
+        let mut values = Vec::new();
+
+        if self.match_token(TokenKind::RBracket) {
+            return Ok(Expr::Literal(Value::Array {
+                element_type: "unknown".to_string(),
+                values,
+            }));
+        }
+
+        loop {
+            let value = self.parse_or()?;
+            let Expr::Literal(value) = value else {
+                return Err(Diagnostic::error(
+                    self.previous_span(),
+                    "array literal items must be literal values",
+                    Some("array expressions will come with helper functions".to_string()),
+                ));
+            };
+            values.push(value);
+
+            if self.match_token(TokenKind::Comma) {
+                if self.match_token(TokenKind::RBracket) {
+                    break;
+                }
+                continue;
+            }
+
+            self.expect(
+                TokenKind::RBracket,
+                "expected `]` after array literal",
+                open_span,
+            )?;
+            break;
+        }
+
+        let element_type = infer_array_element_type(&values);
+        Ok(Expr::Literal(Value::Array {
+            element_type,
+            values,
+        }))
     }
 
     fn match_token(&mut self, kind: TokenKind) -> bool {
@@ -544,9 +677,55 @@ impl ExprParser {
         token
     }
 
+    fn expect(
+        &mut self,
+        kind: TokenKind,
+        message: &str,
+        fallback_span: Span,
+    ) -> Result<Token, Diagnostic> {
+        let Some(token) = self.advance().cloned() else {
+            return Err(Diagnostic::error(fallback_span, message, None));
+        };
+        if token.kind != kind {
+            return Err(Diagnostic::error(token.span, message, None));
+        }
+        Ok(token)
+    }
+
+    fn previous_span(&self) -> Span {
+        self.tokens
+            .get(self.index.saturating_sub(1))
+            .map(|token| token.span.clone())
+            .unwrap_or_else(|| Span::new(1, 1, 1))
+    }
+
     fn peek(&self) -> Option<&Token> {
         self.tokens.get(self.index)
     }
+}
+
+fn infer_array_element_type(values: &[Value]) -> String {
+    let Some(first) = values.first() else {
+        return "unknown".to_string();
+    };
+    if values.iter().all(|value| matches!(value, Value::Object(_))) {
+        return "object".to_string();
+    }
+
+    let first_type = first.type_name();
+    if values
+        .iter()
+        .skip(1)
+        .all(|value| type_names_match(&value.type_name(), &first_type))
+    {
+        first_type
+    } else {
+        "mixed".to_string()
+    }
+}
+
+fn type_names_match(actual: &str, expected: &str) -> bool {
+    actual == expected || (expected == "object" && actual.starts_with('{'))
 }
 
 fn binary_op(kind: TokenKind) -> BinaryOp {

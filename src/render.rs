@@ -45,7 +45,7 @@ fn base_scope_for(file: &WebFile, params: &Scope) -> Scope {
                 prop.name.clone(),
                 prop.default
                     .clone()
-                    .unwrap_or_else(|| sample_for_type(&prop.type_name)),
+                    .unwrap_or_else(|| sample_for_prop_type(&prop.type_name)),
             );
         }
     }
@@ -432,7 +432,36 @@ fn value_matches_type(value: &Value, expected: &str) -> bool {
 }
 
 fn type_names_match(actual: &str, expected: &str) -> bool {
-    actual == expected
+    if actual == expected {
+        return true;
+    }
+
+    if is_object_type_name(expected) {
+        return actual == "object" || actual.starts_with('{');
+    }
+
+    if let (Some(actual_element), Some(expected_element)) =
+        (actual.strip_suffix("[]"), expected.strip_suffix("[]"))
+    {
+        return type_names_match(actual_element, expected_element);
+    }
+
+    actual.starts_with('{') && expected.starts_with('{') && actual == expected
+}
+
+fn is_object_type_name(type_name: &str) -> bool {
+    type_name == "object"
+        || type_name
+            .chars()
+            .next()
+            .is_some_and(|char| char.is_ascii_uppercase())
+}
+
+fn sample_for_prop_type(type_name: &str) -> Value {
+    if is_object_type_name(type_name) {
+        return Value::Object(BTreeMap::new());
+    }
+    sample_for_type(type_name)
 }
 
 fn sample_for_type(type_name: &str) -> Value {
@@ -446,6 +475,7 @@ fn sample_for_type(type_name: &str) -> Value {
     match type_name {
         "int" => Value::Int(0),
         "bool" => Value::Bool(false),
+        "object" => Value::Object(BTreeMap::new()),
         _ => Value::String(String::new()),
     }
 }
@@ -550,6 +580,25 @@ mod tests {
             render_with_components(&file, &Scope::new(), &ComponentRegistry::new())
                 .expect("rendered"),
             "<p>One</p><p>&lt;Two&gt;</p>"
+        );
+    }
+
+    #[test]
+    fn renders_object_properties_in_markup_loops_and_components() {
+        let component = parse(
+            "@component PostPreview {\n  title: string\n  featured: bool = false\n}\n\n<article>{title}:{featured}</article>",
+        )
+        .expect("valid component");
+        let file = parse(
+            "@page \"/\"\n\n@let author = {\n  name: \"Ada\"\n  role: \"admin\"\n}\n@let posts = [\n  { title: \"Intro\", slug: \"intro\", featured: true },\n  { title: \"Launch\", slug: \"launch\", featured: false }\n]\n\n<h1>{author.name}</h1>\n@for post in posts {\n<PostPreview\n  title={post.title}\n  featured={post.featured}\n/>\n}",
+        )
+        .expect("valid page");
+        let mut components = ComponentRegistry::new();
+        components.insert("PostPreview".to_string(), component);
+
+        assert_eq!(
+            render_with_components(&file, &Scope::new(), &components).expect("rendered"),
+            "<h1>Ada</h1>\n<article>Intro:true</article><article>Launch:false</article>"
         );
     }
 

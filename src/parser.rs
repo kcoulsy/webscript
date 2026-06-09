@@ -1,5 +1,6 @@
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
+use std::collections::BTreeMap;
 
 fn parse_diagnostic(
     line: usize,
@@ -117,6 +118,7 @@ pub enum Value {
     String(String),
     Int(i64),
     Bool(bool),
+    Object(BTreeMap<String, Value>),
     Array {
         element_type: String,
         values: Vec<Value>,
@@ -129,6 +131,7 @@ impl Value {
             Value::String(value) => value.clone(),
             Value::Int(value) => value.to_string(),
             Value::Bool(value) => value.to_string(),
+            Value::Object(_) => "[object]".to_string(),
             Value::Array { .. } => "[array]".to_string(),
         }
     }
@@ -165,6 +168,18 @@ impl Value {
             Value::String(_) => "string".to_string(),
             Value::Int(_) => "int".to_string(),
             Value::Bool(_) => "bool".to_string(),
+            Value::Object(fields) => {
+                if fields.is_empty() {
+                    return "object".to_string();
+                }
+
+                let fields = fields
+                    .iter()
+                    .map(|(name, value)| format!("{name}: {}", value.type_name()))
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("{{ {fields} }}")
+            }
             Value::Array { element_type, .. } => format!("{element_type}[]"),
         }
     }
@@ -175,6 +190,7 @@ fn sample_value(type_name: &str) -> Option<Value> {
         "string" => Some(Value::String(String::new())),
         "int" => Some(Value::Int(0)),
         "bool" => Some(Value::Bool(false)),
+        "object" => Some(Value::Object(BTreeMap::new())),
         _ => None,
     }
 }
@@ -221,8 +237,8 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
         }
 
         if trimmed.starts_with("@let") {
-            lets.push(parse_let(trimmed, line_number)?);
-            line_index += 1;
+            let declaration = collect_balanced_line(&lines, &mut line_index, trimmed)?;
+            lets.push(parse_let(&declaration, line_number)?);
             continue;
         }
 
@@ -287,8 +303,8 @@ fn parse_nodes(
         }
 
         if trimmed.starts_with("@let") {
-            lets.push(parse_let(trimmed, line_number)?);
-            *cursor += 1;
+            let declaration = collect_balanced_line(lines, cursor, trimmed)?;
+            lets.push(parse_let(&declaration, line_number)?);
             continue;
         }
 
@@ -302,12 +318,21 @@ fn parse_nodes(
             ));
         }
 
-        if let Some(component) = parse_component_call_line(raw_line, line_number)? {
+        let component_line = if starts_component_call(trimmed) && !trimmed.ends_with("/>") {
+            Some(collect_component_call_line(lines, cursor)?)
+        } else {
+            None
+        };
+        let component_source = component_line.as_deref().unwrap_or(raw_line);
+
+        if let Some(component) = parse_component_call_line(component_source, line_number)? {
             nodes.push(TemplateNode::Component(component));
-            if *cursor + 1 < lines.len() && !is_block_close(lines[*cursor + 1].trim()) {
+            if component_line.is_none() {
+                *cursor += 1;
+            }
+            if *cursor < lines.len() && !is_block_close(lines[*cursor].trim()) {
                 nodes.push(TemplateNode::Text("\n".to_string()));
             }
-            *cursor += 1;
             continue;
         }
 
@@ -406,6 +431,89 @@ fn parse_prop_decl(line: &str, line_number: usize) -> Result<PropDecl, Diagnosti
     })
 }
 
+fn collect_balanced_line(
+    lines: &[&str],
+    cursor: &mut usize,
+    first_trimmed: &str,
+) -> Result<String, Diagnostic> {
+    let start_line = *cursor + 1;
+    let mut collected = first_trimmed.to_string();
+    *cursor += 1;
+
+    while !delimiters_balanced(&collected)? {
+        if *cursor >= lines.len() {
+            return Err(parse_diagnostic_line(
+                start_line,
+                "unclosed literal in @let declaration",
+            ));
+        }
+        collected.push('\n');
+        collected.push_str(lines[*cursor].trim());
+        *cursor += 1;
+    }
+
+    Ok(collected)
+}
+
+fn collect_component_call_line(lines: &[&str], cursor: &mut usize) -> Result<String, Diagnostic> {
+    let start_line = *cursor + 1;
+    let mut collected = lines[*cursor].trim().to_string();
+    *cursor += 1;
+
+    while !collected.trim_end().ends_with("/>") {
+        if *cursor >= lines.len() {
+            return Err(parse_diagnostic_line(start_line, "unclosed component call"));
+        }
+        collected.push(' ');
+        collected.push_str(lines[*cursor].trim());
+        *cursor += 1;
+    }
+
+    Ok(collected)
+}
+
+fn delimiters_balanced(value: &str) -> Result<bool, Diagnostic> {
+    let mut stack = Vec::new();
+    let mut in_string = false;
+    let mut escaped = false;
+
+    for char in value.chars() {
+        if in_string {
+            if char == '"' && !escaped {
+                in_string = false;
+            }
+            escaped = char == '\\' && !escaped;
+            if char != '\\' {
+                escaped = false;
+            }
+            continue;
+        }
+
+        match char {
+            '"' => in_string = true,
+            '{' | '[' | '(' => stack.push(char),
+            '}' => {
+                if stack.pop() != Some('{') {
+                    return Ok(true);
+                }
+            }
+            ']' => {
+                if stack.pop() != Some('[') {
+                    return Ok(true);
+                }
+            }
+            ')' => {
+                if stack.pop() != Some('(') {
+                    return Ok(true);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok(!in_string && stack.is_empty())
+}
+
 fn parse_component_call_line(
     raw_line: &str,
     line_number: usize,
@@ -448,6 +556,17 @@ fn split_tag_name(value: &str) -> Option<(&str, &str)> {
     } else {
         Some((name, value[split_at..].trim()))
     }
+}
+
+fn starts_component_call(trimmed: &str) -> bool {
+    if !trimmed.starts_with('<') {
+        return false;
+    }
+    let inner = trimmed[1..].trim_start();
+    let Some((name, _)) = split_tag_name(inner) else {
+        return false;
+    };
+    is_component_name(name)
 }
 
 fn parse_component_props(
@@ -879,6 +998,15 @@ fn parse_value(
                 format!("invalid bool literal `{value}`"),
             )),
         },
+        "object" => match expr::parse(value, line_number, start_col)? {
+            expr::Expr::Literal(Value::Object(fields)) => Ok(Value::Object(fields)),
+            other => Err(parse_diagnostic(
+                line_number,
+                start_col,
+                end_col,
+                format!("object values must be object literals, found `{other:?}`"),
+            )),
+        },
         other => Err(parse_diagnostic(
             line_number,
             start_col,
@@ -944,11 +1072,26 @@ fn split_array_items(
     let mut items = Vec::new();
     let mut start = 0;
     let mut in_string = false;
+    let mut escaped = false;
+    let mut depth = 0usize;
 
     for (index, char) in value.char_indices() {
+        if in_string {
+            if char == '"' && !escaped {
+                in_string = false;
+            }
+            escaped = char == '\\' && !escaped;
+            if char != '\\' {
+                escaped = false;
+            }
+            continue;
+        }
+
         match char {
-            '"' => in_string = !in_string,
-            ',' if !in_string => {
+            '"' => in_string = true,
+            '{' | '[' | '(' => depth += 1,
+            '}' | ']' | ')' => depth = depth.saturating_sub(1),
+            ',' if depth == 0 => {
                 items.push(&value[start..index]);
                 start = index + 1;
             }
@@ -999,6 +1142,7 @@ fn is_component_name(value: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{parse, LetValue, PropValue, TemplateNode, Value};
+    use crate::expr;
 
     #[test]
     fn parses_page_lets_and_template_ast() {
@@ -1063,6 +1207,25 @@ mod tests {
         assert!(
             matches!(&parsed.template[0], TemplateNode::For { item_name, .. } if item_name == "post")
         );
+    }
+
+    #[test]
+    fn parses_object_literals_and_arrays_of_objects() {
+        let parsed = parse(
+            "@page \"/\"\n\n@let author = {\n  name: \"Ada\"\n  role: \"admin\"\n}\n@let posts = [\n  { title: \"Intro\", slug: \"intro\", featured: true },\n  { title: \"Launch\", slug: \"launch\", featured: false }\n]\n\n<h1>{author.name}</h1>",
+        )
+        .expect("valid page");
+
+        assert!(matches!(
+            &parsed.lets[0].value,
+            LetValue::Expr(expr::Expr::Literal(Value::Object(fields)))
+                if matches!(fields.get("name"), Some(Value::String(name)) if name == "Ada")
+        ));
+        assert!(matches!(
+            &parsed.lets[1].value,
+            LetValue::Expr(expr::Expr::Literal(Value::Array { element_type, values }))
+                if element_type == "object" && values.len() == 2
+        ));
     }
 
     #[test]

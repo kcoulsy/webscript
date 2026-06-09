@@ -54,6 +54,20 @@ For local values, the MVP can infer primitive types from expressions:
 @let greeting = "Hello " + name
 ```
 
+It can also infer object-shaped values and arrays of objects:
+
+```web
+@let author = {
+  name: "Ada"
+  role: "admin"
+}
+
+@let posts = [
+  { title: "Intro", slug: "intro", featured: true },
+  { title: "Launch", slug: "launch", featured: false }
+]
+```
+
 Inside server logic blocks, use typed declarations:
 
 ```web
@@ -129,20 +143,24 @@ Iterate arrays with `@for`:
 Object literals use field syntax:
 
 ```web
-return created({
-  id: post.id
-  title: post.title
-})
+@let author = {
+  name: "Ada"
+  role: "admin"
+}
+
+<h1>{author.name}</h1>
 ```
 
-For function calls with object parameters:
+Object values are structural. For the MVP, `object` accepts any object-shaped value, and named object-ish component prop types are compatible with values that have object shape:
 
 ```web
-post := await Post.create {
-  title: input.title
-  slug: slug(input.title)
-  authorId: auth.user.id
+@component UserCard {
+  user: User
 }
+
+@let pageAuthor = { name: "Ada" }
+
+<UserCard user={pageAuthor} />
 ```
 
 ## Strings
@@ -181,8 +199,8 @@ Expressions can be used in `{...}`:
 <button disabled={isSubmitting}>Save</button>
 ```
 
-The MVP supports identifiers, string/int/bool literals, parentheses, `!`,
-`+`, `-`, comparisons, equality, `&&`, and `||`:
+The MVP supports identifiers, property paths, string/int/bool/object/array
+literals, parentheses, `!`, `+`, `-`, comparisons, equality, `&&`, and `||`:
 
 ```web
 <h1>{"Hello " + name}</h1>
