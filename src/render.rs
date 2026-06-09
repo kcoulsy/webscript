@@ -1,5 +1,7 @@
 use crate::diagnostic::{Diagnostic, Span};
-use crate::parser::{ComponentCall, ComponentProp, PropValue, SourceExpr, TemplateNode, Value, WebFile};
+use crate::parser::{
+    ComponentCall, ComponentProp, PropValue, SourceExpr, TemplateNode, Value, WebFile,
+};
 use std::collections::BTreeMap;
 
 pub type Scope = BTreeMap<String, Value>;
@@ -477,10 +479,7 @@ mod tests {
         let error = render_with_components(&file, &Scope::new(), &ComponentRegistry::new())
             .expect_err("post should be scoped to loop");
 
-        assert_eq!(
-            error.message,
-            "unknown expression `post`"
-        );
+        assert_eq!(error.message, "unknown expression `post`");
         assert_eq!(error.span, Span::braced_expr(8, 4, "post"));
 
         let file = parse(
@@ -556,7 +555,10 @@ mod tests {
             diagnostics[0].label.as_deref(),
             Some("expected `int`, found `string`")
         );
-        assert_eq!(diagnostics[1].message, "unknown prop `extra` for component `UserCard`");
+        assert_eq!(
+            diagnostics[1].message,
+            "unknown prop `extra` for component `UserCard`"
+        );
         assert_eq!(
             diagnostics[2].message,
             "missing prop `name` for component `UserCard`"

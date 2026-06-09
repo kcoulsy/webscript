@@ -1,4 +1,4 @@
-use crate::diagnostic::FileDiagnostic;
+use crate::diagnostic::{Diagnostic, FileDiagnostic, Span};
 use crate::parser;
 use crate::parser::Value;
 use crate::render::{self, Scope};
@@ -39,13 +39,17 @@ impl ProjectRuntime {
     pub fn load_route(
         &mut self,
         request_path: &str,
-    ) -> Result<Option<(Route, parser::WebFile, Scope)>, String> {
+    ) -> Result<Option<(Route, parser::WebFile, Scope)>, FileDiagnostic> {
         Ok(self
             .load_route_with_source(request_path)?
             .map(|(file, _source, parsed, params)| {
                 (
                     Route {
-                        path: parsed.route.as_ref().map(|route| route.raw.clone()).unwrap_or_default(),
+                        path: parsed
+                            .route
+                            .as_ref()
+                            .map(|route| route.raw.clone())
+                            .unwrap_or_default(),
                         file,
                     },
                     parsed,
@@ -57,7 +61,7 @@ impl ProjectRuntime {
     pub fn load_route_with_source(
         &mut self,
         request_path: &str,
-    ) -> Result<Option<(PathBuf, String, parser::WebFile, Scope)>, String> {
+    ) -> Result<Option<(PathBuf, String, parser::WebFile, Scope)>, FileDiagnostic> {
         for route in self.discover_routes()? {
             let (parsed, source) = self.parse_file_with_source(&route.file)?;
 
@@ -71,19 +75,23 @@ impl ProjectRuntime {
         Ok(None)
     }
 
-    pub fn load_components(&mut self) -> Result<render::ComponentRegistry, String> {
+    pub fn load_components(&mut self) -> Result<render::ComponentRegistry, FileDiagnostic> {
         let mut files = Vec::new();
-        collect_web_files(&self.root.join("app"), &mut files)?;
+        collect_web_files(&self.root.join("app"), &mut files).map_err(read_dir_diagnostic)?;
 
         let mut components = render::ComponentRegistry::new();
         for file in files {
-            let parsed = self.parse_file(&file)?;
+            let (parsed, source) = self.parse_file_with_source(&file)?;
             if let Some(component) = &parsed.component {
                 if components
                     .insert(component.name.clone(), parsed.clone())
                     .is_some()
                 {
-                    return Err(format!("duplicate component `{}`", component.name));
+                    return Err(duplicate_component_diagnostic(
+                        &file,
+                        &source,
+                        &component.name,
+                    ));
                 }
             }
         }
@@ -91,9 +99,9 @@ impl ProjectRuntime {
         Ok(components)
     }
 
-    fn discover_routes(&mut self) -> Result<Vec<Route>, String> {
+    fn discover_routes(&mut self) -> Result<Vec<Route>, FileDiagnostic> {
         let mut files = Vec::new();
-        collect_web_files(&self.root.join("app"), &mut files)?;
+        collect_web_files(&self.root.join("app"), &mut files).map_err(read_dir_diagnostic)?;
 
         let mut routes = Vec::new();
         for file in files {
@@ -110,12 +118,15 @@ impl ProjectRuntime {
         Ok(routes)
     }
 
-    fn parse_file(&mut self, file: &Path) -> Result<parser::WebFile, String> {
+    fn parse_file(&mut self, file: &Path) -> Result<parser::WebFile, FileDiagnostic> {
         Ok(self.parse_file_with_source(file)?.0)
     }
 
-    fn parse_file_with_source(&mut self, file: &Path) -> Result<(parser::WebFile, String), String> {
-        let source = fs::read_to_string(file).map_err(|error| error.to_string())?;
+    fn parse_file_with_source(
+        &mut self,
+        file: &Path,
+    ) -> Result<(parser::WebFile, String), FileDiagnostic> {
+        let source = fs::read_to_string(file).map_err(|error| read_file_diagnostic(file, error))?;
         let source_hash = hash_source(&source);
 
         if let Some(cached) = self.parsed_files.get(file) {
@@ -124,14 +135,8 @@ impl ProjectRuntime {
             }
         }
 
-        let parsed = parser::parse(&source).map_err(|error| {
-            format!(
-                "{}:{}:{}: {}",
-                file.display(),
-                error.span.line,
-                error.span.start_col,
-                error.message
-            )
+        let parsed = parser::parse(&source).map_err(|diagnostic| {
+            FileDiagnostic::new(file.to_path_buf(), source.clone(), diagnostic)
         })?;
         self.parsed_files.insert(
             file.to_path_buf(),
@@ -144,6 +149,48 @@ impl ProjectRuntime {
 
         Ok((parsed, source))
     }
+}
+
+fn read_file_diagnostic(file: &Path, error: std::io::Error) -> FileDiagnostic {
+    FileDiagnostic::new(
+        file.to_path_buf(),
+        String::new(),
+        Diagnostic::error(
+            Span::at(1, 1),
+            format!("could not read file: {error}"),
+            None,
+        ),
+    )
+}
+
+fn read_dir_diagnostic(error: String) -> FileDiagnostic {
+    FileDiagnostic::new(
+        PathBuf::from("app"),
+        String::new(),
+        Diagnostic::error(Span::at(1, 1), error, None),
+    )
+}
+
+fn duplicate_component_diagnostic(file: &Path, source: &str, name: &str) -> FileDiagnostic {
+    let (line, column) = source
+        .lines()
+        .enumerate()
+        .find_map(|(index, line)| {
+            line.trim()
+                .strip_prefix("@component")
+                .map(|_| (index + 1, line.find('@').unwrap_or(0) + 1))
+        })
+        .unwrap_or((1, 1));
+
+    FileDiagnostic::new(
+        file.to_path_buf(),
+        source.to_string(),
+        Diagnostic::error(
+            Span::identifier(line, column, name),
+            format!("duplicate component `{name}`"),
+            None,
+        ),
+    )
 }
 
 fn hash_source(source: &str) -> u64 {
@@ -177,40 +224,59 @@ pub fn create_project(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-pub fn discover_routes(root: &Path) -> Result<Vec<Route>, String> {
+pub fn discover_routes(root: &Path) -> Result<Vec<Route>, FileDiagnostic> {
     ProjectRuntime::new(root.to_path_buf()).discover_routes()
 }
 
 pub fn check_project(root: &Path) -> Result<Vec<FileDiagnostic>, String> {
     let mut files = Vec::new();
     collect_web_files(&root.join("app"), &mut files)?;
-    let components = load_components(root)?;
 
     let mut diagnostics = Vec::new();
+    let mut parsed_by_file = BTreeMap::new();
+
     for file in files {
         let source = fs::read_to_string(&file).map_err(|error| error.to_string())?;
         match parser::parse(&source) {
             Ok(parsed) => {
-                for diagnostic in render::validate_with_components(&parsed, &components) {
-                    diagnostics.push(FileDiagnostic {
-                        file: file.clone(),
-                        source: source.clone(),
-                        diagnostic,
-                    });
-                }
+                parsed_by_file.insert(file, (parsed, source));
             }
-            Err(diagnostic) => diagnostics.push(FileDiagnostic {
-                file: file.clone(),
-                source,
+            Err(diagnostic) => {
+                diagnostics.push(FileDiagnostic::new(file, source, diagnostic));
+            }
+        }
+    }
+
+    let mut components = render::ComponentRegistry::new();
+    for (file, (parsed, source)) in &parsed_by_file {
+        if let Some(component) = &parsed.component {
+            if components
+                .insert(component.name.clone(), parsed.clone())
+                .is_some()
+            {
+                diagnostics.push(duplicate_component_diagnostic(
+                    file,
+                    source,
+                    &component.name,
+                ));
+            }
+        }
+    }
+
+    for (file, (parsed, source)) in &parsed_by_file {
+        for diagnostic in render::validate_with_components(parsed, &components) {
+            diagnostics.push(FileDiagnostic::new(
+                file.clone(),
+                source.clone(),
                 diagnostic,
-            }),
+            ));
         }
     }
 
     Ok(diagnostics)
 }
 
-pub fn load_components(root: &Path) -> Result<render::ComponentRegistry, String> {
+pub fn load_components(root: &Path) -> Result<render::ComponentRegistry, FileDiagnostic> {
     ProjectRuntime::new(root.to_path_buf()).load_components()
 }
 

@@ -76,6 +76,24 @@ pub struct FileDiagnostic {
     pub diagnostic: Diagnostic,
 }
 
+impl FileDiagnostic {
+    pub fn new(file: PathBuf, source: String, diagnostic: Diagnostic) -> Self {
+        Self {
+            file,
+            source,
+            diagnostic,
+        }
+    }
+
+    pub fn report_stderr(&self) {
+        render_one(self, io::stderr()).ok();
+    }
+
+    pub fn dev_error_html(&self) -> String {
+        dev_error_page(&self.file, &self.source, &self.diagnostic)
+    }
+}
+
 pub fn span_to_byte_range(source: &str, span: &Span) -> Range<usize> {
     let mut line_index = 1usize;
     let mut line_start = 0usize;
@@ -118,19 +136,20 @@ pub fn render_one(file_diagnostic: &FileDiagnostic, writer: impl Write) -> io::R
         Severity::Warning => ReportKind::Warning,
     };
 
-    let mut builder = Report::build(kind, file_id.as_str(), range.start)
-        .with_message(file_diagnostic.diagnostic.message.clone());
-
-    if let Some(label) = &file_diagnostic.diagnostic.label {
-        builder = builder.with_label(
-            Label::new((file_id.as_str(), range.clone()))
-                .with_message(label.clone())
-                .with_color(Color::Red),
-        );
+    let mut label = Label::new((file_id.as_str(), range.clone())).with_color(Color::Red);
+    if let Some(text) = &file_diagnostic.diagnostic.label {
+        label = label.with_message(text.clone());
     }
 
+    let builder = Report::build(kind, file_id.as_str(), range.start)
+        .with_message(file_diagnostic.diagnostic.message.clone())
+        .with_label(label);
+
     builder.finish().write(
-        (file_id.as_str(), Source::from(file_diagnostic.source.as_str())),
+        (
+            file_id.as_str(),
+            Source::from(file_diagnostic.source.as_str()),
+        ),
         writer,
     )
 }

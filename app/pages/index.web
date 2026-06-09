@@ -1,6 +1,6 @@
 @page "/"
 
-@let name: string = "sdf"
+@let name: string = "aaa"
 @let showIntro: bool = false
 @let posts: string[] = ["One", "Two", "Three"]
 

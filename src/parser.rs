@@ -1,7 +1,12 @@
 use crate::diagnostic::{Diagnostic, Span};
 use std::collections::BTreeMap;
 
-fn parse_diagnostic(line: usize, start_col: usize, end_col: usize, message: impl Into<String>) -> Diagnostic {
+fn parse_diagnostic(
+    line: usize,
+    start_col: usize,
+    end_col: usize,
+    message: impl Into<String>,
+) -> Diagnostic {
     Diagnostic::error(Span::new(line, start_col, end_col), message, None)
 }
 
@@ -353,9 +358,9 @@ fn parse_prop_decl(line: &str, line_number: usize) -> Result<PropDecl, Diagnosti
         Some((left, right)) => (left.trim(), Some(right.trim())),
         None => (line, None),
     };
-    let (name, type_name) = left.split_once(':').ok_or_else(|| {
-        parse_diagnostic_line(line_number, "component props use `name: type`")
-    })?;
+    let (name, type_name) = left
+        .split_once(':')
+        .ok_or_else(|| parse_diagnostic_line(line_number, "component props use `name: type`"))?;
     let name = name.trim();
     let type_name = type_name.trim();
 
@@ -581,13 +586,11 @@ fn parse_for(
         .expect("@for prefix already checked")
         .trim()
         .strip_suffix('{')
-        .ok_or_else(|| {
-            parse_diagnostic_line(line_number, "@for expects `@for item in items {`")
-        })?
+        .ok_or_else(|| parse_diagnostic_line(line_number, "@for expects `@for item in items {`"))?
         .trim();
-    let (item_name, source_name) = header.split_once(" in ").ok_or_else(|| {
-        parse_diagnostic_line(line_number, "@for expects `@for item in items {`")
-    })?;
+    let (item_name, source_name) = header
+        .split_once(" in ")
+        .ok_or_else(|| parse_diagnostic_line(line_number, "@for expects `@for item in items {`"))?;
     let item_name = item_name.trim();
     let source_name = source_name.trim();
 
@@ -768,7 +771,10 @@ fn parse_route_params(raw: &str, line_number: usize) -> Result<Vec<RouteParam>, 
     while let Some(start) = rest.find('{') {
         rest = &rest[start + 1..];
         let Some(end) = rest.find('}') else {
-            return Err(parse_diagnostic_line(line_number, "unclosed route parameter"));
+            return Err(parse_diagnostic_line(
+                line_number,
+                "unclosed route parameter",
+            ));
         };
         let param = &rest[..end];
         let (name, type_name) = param
@@ -795,9 +801,9 @@ fn parse_let(line: &str, line_number: usize) -> Result<(String, Value), Diagnost
         .strip_prefix("@let")
         .expect("@let prefix already checked")
         .trim();
-    let (left, right) = rest.split_once('=').ok_or_else(|| {
-        parse_diagnostic_line(line_number, "@let expects `name: type = value`")
-    })?;
+    let (left, right) = rest
+        .split_once('=')
+        .ok_or_else(|| parse_diagnostic_line(line_number, "@let expects `name: type = value`"))?;
     let (name, type_name) = left
         .split_once(':')
         .ok_or_else(|| parse_diagnostic_line(line_number, "@let expects an explicit type"))?;
@@ -811,10 +817,7 @@ fn parse_let(line: &str, line_number: usize) -> Result<(String, Value), Diagnost
     }
 
     let value_text = right.trim();
-    let value_col = line
-        .find(value_text)
-        .map(|index| index + 1)
-        .unwrap_or(1);
+    let value_col = line.find(value_text).map(|index| index + 1).unwrap_or(1);
     let value = parse_value(
         type_name.trim(),
         value_text,
@@ -837,16 +840,14 @@ fn parse_value(
     }
 
     match type_name {
-        "string" => parse_quoted(value)
-            .map(Value::String)
-            .ok_or_else(|| {
-                parse_diagnostic(
-                    line_number,
-                    start_col,
-                    end_col,
-                    "string values must be quoted",
-                )
-            }),
+        "string" => parse_quoted(value).map(Value::String).ok_or_else(|| {
+            parse_diagnostic(
+                line_number,
+                start_col,
+                end_col,
+                "string values must be quoted",
+            )
+        }),
         "int" => value.parse::<i64>().map(Value::Int).map_err(|_| {
             parse_diagnostic(
                 line_number,

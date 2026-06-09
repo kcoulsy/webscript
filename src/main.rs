@@ -1,3 +1,4 @@
+mod dev;
 mod diagnostic;
 mod parser;
 mod project;
@@ -27,15 +28,22 @@ fn run() -> Result<(), String> {
         }
         "routes" => {
             let root = env::current_dir().map_err(|error| error.to_string())?;
-            let routes = project::discover_routes(&root)?;
-            if routes.is_empty() {
-                println!("No routes found.");
-            } else {
-                for route in routes {
-                    println!("GET   {:<24} {}", route.path, route.file.display());
+            match project::discover_routes(&root) {
+                Ok(routes) => {
+                    if routes.is_empty() {
+                        println!("No routes found.");
+                    } else {
+                        for route in routes {
+                            println!("GET   {:<24} {}", route.path, route.file.display());
+                        }
+                    }
+                    Ok(())
+                }
+                Err(diagnostic) => {
+                    diagnostic.report_stderr();
+                    Err("routes failed".to_string())
                 }
             }
-            Ok(())
         }
         "check" => {
             let root = env::current_dir().map_err(|error| error.to_string())?;
