@@ -28,6 +28,11 @@ pub enum TemplateNode {
         then_nodes: Vec<TemplateNode>,
         else_nodes: Vec<TemplateNode>,
     },
+    For {
+        item_name: String,
+        source: SourceExpr,
+        body: Vec<TemplateNode>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -42,6 +47,10 @@ pub enum Value {
     String(String),
     Int(i64),
     Bool(bool),
+    Array {
+        element_type: String,
+        values: Vec<Value>,
+    },
 }
 
 impl Value {
@@ -50,6 +59,7 @@ impl Value {
             Value::String(value) => value.clone(),
             Value::Int(value) => value.to_string(),
             Value::Bool(value) => value.to_string(),
+            Value::Array { .. } => "[array]".to_string(),
         }
     }
 
@@ -58,6 +68,35 @@ impl Value {
             Value::Bool(value) => Some(*value),
             _ => None,
         }
+    }
+
+    pub fn as_array(&self) -> Option<&[Value]> {
+        match self {
+            Value::Array { values, .. } => Some(values),
+            _ => None,
+        }
+    }
+
+    pub fn array_sample(&self) -> Option<Value> {
+        match self {
+            Value::Array {
+                element_type,
+                values,
+            } => values
+                .first()
+                .cloned()
+                .or_else(|| sample_value(element_type)),
+            _ => None,
+        }
+    }
+}
+
+fn sample_value(type_name: &str) -> Option<Value> {
+    match type_name {
+        "string" => Some(Value::String(String::new())),
+        "int" => Some(Value::Int(0)),
+        "bool" => Some(Value::Bool(false)),
+        _ => None,
     }
 }
 
@@ -130,6 +169,14 @@ fn parse_nodes(
             continue;
         }
 
+        if trimmed.starts_with("@for ") {
+            nodes.push(parse_for(lines, cursor)?);
+            if *cursor < lines.len() && !is_block_close(lines[*cursor].trim()) {
+                nodes.push(TemplateNode::Text("\n".to_string()));
+            }
+            continue;
+        }
+
         nodes.extend(parse_text_line(raw_line, line_number));
         if *cursor + 1 < lines.len() && !is_block_close(lines[*cursor + 1].trim()) {
             nodes.push(TemplateNode::Text("\n".to_string()));
@@ -142,6 +189,59 @@ fn parse_nodes(
 
 fn is_block_close(trimmed: &str) -> bool {
     trimmed == "}" || trimmed.starts_with("} @else")
+}
+
+fn parse_for(lines: &[&str], cursor: &mut usize) -> Result<TemplateNode, String> {
+    let raw_line = lines[*cursor];
+    let line_number = *cursor + 1;
+    let trimmed = raw_line.trim();
+
+    let header = trimmed
+        .strip_prefix("@for")
+        .expect("@for prefix already checked")
+        .trim()
+        .strip_suffix('{')
+        .ok_or_else(|| format!("line {line_number}: @for expects `@for item in items {{`"))?
+        .trim();
+    let (item_name, source_name) = header
+        .split_once(" in ")
+        .ok_or_else(|| format!("line {line_number}: @for expects `@for item in items {{`"))?;
+    let item_name = item_name.trim();
+    let source_name = source_name.trim();
+
+    if !is_identifier(item_name) {
+        return Err(format!(
+            "line {line_number}: invalid loop variable `{item_name}`"
+        ));
+    }
+    if !is_identifier(source_name) {
+        return Err(format!(
+            "line {line_number}: invalid loop source `{source_name}`"
+        ));
+    }
+
+    let source_column = raw_line
+        .find(source_name)
+        .map(|index| index + 1)
+        .unwrap_or(1);
+
+    *cursor += 1;
+    let body = parse_nodes(lines, cursor, true)?;
+
+    if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
+        return Err(format!("line {line_number}: unclosed @for block"));
+    }
+    *cursor += 1;
+
+    Ok(TemplateNode::For {
+        item_name: item_name.to_string(),
+        source: SourceExpr {
+            name: source_name.to_string(),
+            line: line_number,
+            column: source_column,
+        },
+        body,
+    })
 }
 
 fn parse_if(lines: &[&str], cursor: &mut usize) -> Result<TemplateNode, String> {
@@ -317,6 +417,10 @@ fn parse_let(line: &str, line_number: usize) -> Result<(String, Value), String> 
 }
 
 fn parse_value(type_name: &str, value: &str, line_number: usize) -> Result<Value, String> {
+    if let Some(element_type) = type_name.strip_suffix("[]") {
+        return parse_array_value(element_type, value, line_number);
+    }
+
     match type_name {
         "string" => parse_quoted(value)
             .map(Value::String)
@@ -336,6 +440,59 @@ fn parse_value(type_name: &str, value: &str, line_number: usize) -> Result<Value
             "line {line_number}: unsupported MVP type `{other}`"
         )),
     }
+}
+
+fn parse_array_value(type_name: &str, value: &str, line_number: usize) -> Result<Value, String> {
+    let value = value.trim();
+    if !value.starts_with('[') || !value.ends_with(']') {
+        return Err(format!(
+            "line {line_number}: array values must use `[value, ...]`"
+        ));
+    }
+
+    let inner = value[1..value.len() - 1].trim();
+    if inner.is_empty() {
+        return Ok(Value::Array {
+            element_type: type_name.to_string(),
+            values: Vec::new(),
+        });
+    }
+
+    let mut values = Vec::new();
+    for item in split_array_items(inner, line_number)? {
+        values.push(parse_value(type_name, item.trim(), line_number)?);
+    }
+
+    Ok(Value::Array {
+        element_type: type_name.to_string(),
+        values,
+    })
+}
+
+fn split_array_items(value: &str, line_number: usize) -> Result<Vec<&str>, String> {
+    let mut items = Vec::new();
+    let mut start = 0;
+    let mut in_string = false;
+
+    for (index, char) in value.char_indices() {
+        match char {
+            '"' => in_string = !in_string,
+            ',' if !in_string => {
+                items.push(&value[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+
+    if in_string {
+        return Err(format!(
+            "line {line_number}: unterminated string in array literal"
+        ));
+    }
+
+    items.push(&value[start..]);
+    Ok(items)
 }
 
 fn parse_quoted(value: &str) -> Option<String> {
@@ -391,6 +548,21 @@ mod tests {
         .expect("valid page");
 
         assert!(matches!(parsed.template[0], TemplateNode::If { .. }));
+    }
+
+    #[test]
+    fn parses_arrays_and_for_blocks() {
+        let parsed = parse(
+            "@page \"/\"\n\n@let posts: string[] = [\"One\", \"Two\", \"Three\"]\n\n@for post in posts {\n<p>{post}</p>\n}",
+        )
+        .expect("valid page");
+
+        assert!(
+            matches!(parsed.lets.get("posts"), Some(Value::Array { values, .. }) if values.len() == 3)
+        );
+        assert!(
+            matches!(&parsed.template[0], TemplateNode::For { item_name, .. } if item_name == "post")
+        );
     }
 
     #[test]

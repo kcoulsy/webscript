@@ -70,6 +70,30 @@ fn render_nodes(nodes: &[TemplateNode], scope: &Scope) -> Result<String, String>
                     html.push_str(&render_nodes(else_nodes, scope)?);
                 }
             }
+            TemplateNode::For {
+                item_name,
+                source,
+                body,
+            } => {
+                let value = scope.get(&source.name).ok_or_else(|| {
+                    format!(
+                        "line {}:{} unknown loop source `{}`",
+                        source.line, source.column, source.name
+                    )
+                })?;
+                let Some(items) = value.as_array() else {
+                    return Err(format!(
+                        "line {}:{} @for source `{}` must be array",
+                        source.line, source.column, source.name
+                    ));
+                };
+
+                for item in items {
+                    let mut loop_scope = scope.clone();
+                    loop_scope.insert(item_name.clone(), item.clone());
+                    html.push_str(&render_nodes(body, &loop_scope)?);
+                }
+            }
         }
     }
 
@@ -107,6 +131,27 @@ fn validate_nodes(nodes: &[TemplateNode], scope: &Scope, diagnostics: &mut Vec<S
                 validate_nodes(then_nodes, scope, diagnostics);
                 validate_nodes(else_nodes, scope, diagnostics);
             }
+            TemplateNode::For {
+                item_name,
+                source,
+                body,
+            } => match scope.get(&source.name) {
+                Some(value) if value.as_array().is_some() => {
+                    let mut loop_scope = scope.clone();
+                    if let Some(sample) = value.array_sample() {
+                        loop_scope.insert(item_name.clone(), sample);
+                    }
+                    validate_nodes(body, &loop_scope, diagnostics);
+                }
+                Some(_) => diagnostics.push(format!(
+                    "line {}:{} @for source `{}` must be array",
+                    source.line, source.column, source.name
+                )),
+                None => diagnostics.push(format!(
+                    "line {}:{} unknown loop source `{}`",
+                    source.line, source.column, source.name
+                )),
+            },
         }
     }
 }
@@ -150,6 +195,61 @@ mod tests {
         .expect("valid page");
 
         assert_eq!(render(&file, &Scope::new()).expect("rendered"), "<p>no</p>");
+    }
+
+    #[test]
+    fn renders_for_blocks_with_scoped_items() {
+        let file = parse(
+            "@page \"/\"\n\n@let posts: string[] = [\"One\", \"<Two>\"]\n\n@for post in posts {\n<p>{post}</p>\n}\n<p>{post}</p>",
+        )
+        .expect("valid page");
+        let error = render(&file, &Scope::new()).expect_err("post should be scoped to loop");
+
+        assert_eq!(error, "line 8:5 unknown expression `post`");
+
+        let file = parse(
+            "@page \"/\"\n\n@let posts: string[] = [\"One\", \"<Two>\"]\n\n@for post in posts {\n<p>{post}</p>\n}",
+        )
+        .expect("valid page");
+
+        assert_eq!(
+            render(&file, &Scope::new()).expect("rendered"),
+            "<p>One</p><p>&lt;Two&gt;</p>"
+        );
+    }
+
+    #[test]
+    fn validates_for_source_type() {
+        let file = parse("@page \"/\"\n\n@let title: string = \"Nope\"\n\n@for post in title {\n<p>{post}</p>\n}")
+            .expect("valid page");
+
+        assert_eq!(
+            super::validate(&file),
+            vec!["line 5:14 @for source `title` must be array"]
+        );
+    }
+
+    #[test]
+    fn validates_unknown_loop_sources_and_scoping() {
+        let file = parse("@page \"/\"\n\n@for post in posts {\n<p>{post}</p>\n}\n<p>{post}</p>")
+            .expect("valid page");
+
+        assert_eq!(
+            super::validate(&file),
+            vec![
+                "line 3:14 unknown loop source `posts`",
+                "line 6:5 unknown expression `post`",
+            ]
+        );
+    }
+
+    #[test]
+    fn validates_if_requires_bool_inside_empty_bool_array_loop() {
+        let file =
+            parse("@page \"/\"\n\n@let flags: bool[] = []\n\n@for flag in flags {\n@if flag {\n<p>yes</p>\n}\n}")
+                .expect("valid page");
+
+        assert!(super::validate(&file).is_empty());
     }
 
     #[test]

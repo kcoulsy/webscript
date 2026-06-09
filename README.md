@@ -53,22 +53,27 @@ Supported today:
 
 - `web new <name>` creates a starter app.
 - `web routes` discovers explicit `@page` routes under `app/`.
-- `web check` parses `.web` files and validates template bindings and simple `@if` conditions.
+- `web check` parses `.web` files and validates template bindings, simple `@if` conditions, and `@for` loops.
 - `web serve --port 3000` serves pages directly from `.web` files.
 
-The first supported language slice is intentionally small, but now includes template expressions, bool `@if` blocks, and simple `string`/`int` route params:
+The first supported language slice is intentionally small, but now includes template expressions, bool `@if` blocks, array `@let` values, scoped `@for` loops, and simple `string`/`int` route params:
 
 ```web
 @page "/"
 
 @let name: string = "WebScript"
 @let showIntro: bool = true
+@let posts: string[] = ["One", "Two", "Three"]
 
 <main>
   <h1>Hello {name}</h1>
 
   @if showIntro {
     <p>Direct .web serving is alive.</p>
+  }
+
+  @for post in posts {
+    <p>{post}</p>
   }
 </main>
 ```

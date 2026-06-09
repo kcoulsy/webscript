@@ -50,7 +50,7 @@ pub fn discover_routes(root: &Path) -> Result<Vec<Route>, String> {
         });
     }
 
-    routes.sort_by(|left, right| left.path.cmp(&right.path));
+    routes.sort_by(compare_routes);
     Ok(routes)
 }
 
@@ -132,6 +132,43 @@ fn match_route(file: &parser::WebFile, request_path: &str) -> Option<Scope> {
     Some(params)
 }
 
+fn compare_routes(left: &Route, right: &Route) -> std::cmp::Ordering {
+    let left_score = route_score(&left.path);
+    let right_score = route_score(&right.path);
+
+    left_score
+        .dynamic_segments
+        .cmp(&right_score.dynamic_segments)
+        .then_with(|| right_score.static_segments.cmp(&left_score.static_segments))
+        .then_with(|| right_score.total_segments.cmp(&left_score.total_segments))
+        .then_with(|| left.path.cmp(&right.path))
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RouteScore {
+    dynamic_segments: usize,
+    static_segments: usize,
+    total_segments: usize,
+}
+
+fn route_score(path: &str) -> RouteScore {
+    let segments: Vec<&str> = path
+        .trim_matches('/')
+        .split('/')
+        .filter(|segment| !segment.is_empty())
+        .collect();
+    let dynamic_segments = segments
+        .iter()
+        .filter(|segment| segment.starts_with('{') && segment.ends_with('}'))
+        .count();
+
+    RouteScore {
+        dynamic_segments,
+        static_segments: segments.len() - dynamic_segments,
+        total_segments: segments.len(),
+    }
+}
+
 fn collect_web_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String> {
     if !root.exists() {
         return Ok(());
@@ -148,4 +185,35 @@ fn collect_web_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{compare_routes, match_route, Route};
+    use crate::parser::{parse, Value};
+    use std::cmp::Ordering;
+    use std::path::PathBuf;
+
+    #[test]
+    fn exact_routes_sort_before_dynamic_routes() {
+        let exact = Route {
+            path: "/posts/new".to_string(),
+            file: PathBuf::from("new.web"),
+        };
+        let dynamic = Route {
+            path: "/posts/{slug:string}".to_string(),
+            file: PathBuf::from("slug.web"),
+        };
+
+        assert_eq!(compare_routes(&exact, &dynamic), Ordering::Less);
+        assert_eq!(compare_routes(&dynamic, &exact), Ordering::Greater);
+    }
+
+    #[test]
+    fn dynamic_route_extracts_params() {
+        let file = parse("@page \"/posts/{slug:string}\"\n\n<h1>{slug}</h1>").expect("valid route");
+        let params = match_route(&file, "/posts/hello").expect("matched");
+
+        assert!(matches!(params.get("slug"), Some(Value::String(value)) if value == "hello"));
+    }
 }
