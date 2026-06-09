@@ -1,8 +1,14 @@
 @page "/"
 
 @let name: string = "WebScript"
+@let showIntro: bool = false
 
 <main>
   <h1>Hello {name}</h1>
-  <p>This page is served directly from app/pages/index.web.</p>
+
+  @if showIntro {
+    <p>This page is served directly from app/pages/index.web.</p>
+  } @else {
+    <p>The intro is hidden.</p>
+  }
 </main>

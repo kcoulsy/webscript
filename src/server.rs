@@ -48,12 +48,39 @@ fn handle_connection(root: &Path, mut stream: TcpStream) -> Result<(), String> {
     }
 
     match project::load_route(root, path)? {
-        Some((_route, parsed)) => {
-            let html = render::render(&parsed)?;
-            write_response(&mut stream, 200, "text/html; charset=utf-8", &html)
-        }
+        Some((_route, parsed, params)) => match render::render(&parsed, &params) {
+            Ok(html) => write_response(&mut stream, 200, "text/html; charset=utf-8", &html),
+            Err(error) => write_response(
+                &mut stream,
+                500,
+                "text/html; charset=utf-8",
+                &dev_error_page(&error),
+            ),
+        },
         None => write_response(&mut stream, 404, "text/plain", "Not Found"),
     }
+}
+
+fn dev_error_page(error: &str) -> String {
+    format!(
+        "<!doctype html><html><head><title>WebScript Error</title><style>body{{font-family:system-ui,sans-serif;margin:3rem;line-height:1.5}}pre{{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:6px;overflow:auto}}</style></head><body><h1>WebScript Error</h1><pre>{}</pre></body></html>",
+        escape_html(error)
+    )
+}
+
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for char in value.chars() {
+        match char {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(char),
+        }
+    }
+    escaped
 }
 
 fn public_asset(root: &Path, request_path: &str) -> Result<Option<String>, String> {
