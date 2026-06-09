@@ -1,3 +1,4 @@
+use crate::diagnostic;
 use crate::project;
 use crate::render;
 use std::fs;
@@ -6,14 +7,25 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 
 pub fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String> {
+    match project::check_project(&root) {
+        Ok(diagnostics) if !diagnostics.is_empty() => {
+            eprintln!("Type check errors found (server will still start):");
+            diagnostic::render_all(&diagnostics);
+            eprintln!();
+        }
+        Err(error) => return Err(error),
+        _ => {}
+    }
+
     let address = format!("{host}:{port}");
     let listener = TcpListener::bind(&address).map_err(|error| error.to_string())?;
     println!("WebScript dev server listening on http://{address}");
+    let mut runtime = project::ProjectRuntime::new(root.clone());
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
-                if let Err(error) = handle_connection(&root, stream) {
+                if let Err(error) = handle_connection(&root, &mut runtime, stream) {
                     eprintln!("request error: {error}");
                 }
             }
@@ -24,7 +36,11 @@ pub fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String> {
     Ok(())
 }
 
-fn handle_connection(root: &Path, mut stream: TcpStream) -> Result<(), String> {
+fn handle_connection(
+    root: &Path,
+    runtime: &mut project::ProjectRuntime,
+    mut stream: TcpStream,
+) -> Result<(), String> {
     let mut buffer = [0; 4096];
     let size = stream
         .read(&mut buffer)
@@ -47,40 +63,32 @@ fn handle_connection(root: &Path, mut stream: TcpStream) -> Result<(), String> {
         return write_response(&mut stream, 200, content_type(path), &asset);
     }
 
-    match project::load_route(root, path)? {
-        Some((_route, parsed, params)) => match render::render(&parsed, &params) {
-            Ok(html) => write_response(&mut stream, 200, "text/html; charset=utf-8", &html),
-            Err(error) => write_response(
-                &mut stream,
-                500,
-                "text/html; charset=utf-8",
-                &dev_error_page(&error),
-            ),
-        },
+    match runtime.load_route_with_source(path)? {
+        Some((route_file, source, parsed, params)) => {
+            match render::render_with_components(&parsed, &params, &runtime.load_components()?) {
+                Ok(html) => write_response(&mut stream, 200, "text/html; charset=utf-8", &html),
+                Err(error) => {
+                    let file_diagnostic = diagnostic::FileDiagnostic {
+                        file: route_file,
+                        source,
+                        diagnostic: error.clone(),
+                    };
+                    diagnostic::render_one(&file_diagnostic, std::io::stderr()).ok();
+                    write_response(
+                        &mut stream,
+                        500,
+                        "text/html; charset=utf-8",
+                        &diagnostic::dev_error_page(
+                            &file_diagnostic.file,
+                            &file_diagnostic.source,
+                            &error,
+                        ),
+                    )
+                }
+            }
+        }
         None => write_response(&mut stream, 404, "text/plain", "Not Found"),
     }
-}
-
-fn dev_error_page(error: &str) -> String {
-    format!(
-        "<!doctype html><html><head><title>WebScript Error</title><style>body{{font-family:system-ui,sans-serif;margin:3rem;line-height:1.5}}pre{{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:6px;overflow:auto}}</style></head><body><h1>WebScript Error</h1><pre>{}</pre></body></html>",
-        escape_html(error)
-    )
-}
-
-fn escape_html(value: &str) -> String {
-    let mut escaped = String::with_capacity(value.len());
-    for char in value.chars() {
-        match char {
-            '&' => escaped.push_str("&amp;"),
-            '<' => escaped.push_str("&lt;"),
-            '>' => escaped.push_str("&gt;"),
-            '"' => escaped.push_str("&quot;"),
-            '\'' => escaped.push_str("&#39;"),
-            _ => escaped.push(char),
-        }
-    }
-    escaped
 }
 
 fn public_asset(root: &Path, request_path: &str) -> Result<Option<String>, String> {

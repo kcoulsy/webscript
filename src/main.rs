@@ -1,3 +1,4 @@
+mod diagnostic;
 mod parser;
 mod project;
 mod render;
@@ -43,9 +44,7 @@ fn run() -> Result<(), String> {
                 println!("Project OK");
                 Ok(())
             } else {
-                for diagnostic in diagnostics {
-                    eprintln!("{diagnostic}");
-                }
+                diagnostic::render_all(&diagnostics);
                 Err("check failed".to_string())
             }
         }

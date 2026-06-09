@@ -1,0 +1,214 @@
+use ariadne::{Color, Label, Report, ReportKind, Source};
+use std::io::{self, Write};
+use std::ops::Range;
+use std::path::{Path, PathBuf};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Severity {
+    Error,
+    #[allow(dead_code)]
+    Warning,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Span {
+    pub line: usize,
+    pub start_col: usize,
+    pub end_col: usize,
+}
+
+impl Span {
+    pub fn new(line: usize, start_col: usize, end_col: usize) -> Self {
+        Self {
+            line,
+            start_col,
+            end_col: end_col.max(start_col),
+        }
+    }
+
+    pub fn identifier(line: usize, column: usize, name: &str) -> Self {
+        Self::new(line, column, column + name.len())
+    }
+
+    pub fn braced_expr(line: usize, column: usize, name: &str) -> Self {
+        Self::new(line, column, column + name.len() + 2)
+    }
+
+    #[allow(dead_code)]
+    pub fn at(line: usize, column: usize) -> Self {
+        Self::new(line, column, column + 1)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Diagnostic {
+    pub severity: Severity,
+    pub message: String,
+    pub span: Span,
+    pub label: Option<String>,
+}
+
+impl Diagnostic {
+    pub fn error(span: Span, message: impl Into<String>, label: Option<String>) -> Self {
+        Self {
+            severity: Severity::Error,
+            message: message.into(),
+            span,
+            label,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub fn warning(span: Span, message: impl Into<String>, label: Option<String>) -> Self {
+        Self {
+            severity: Severity::Warning,
+            message: message.into(),
+            span,
+            label,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FileDiagnostic {
+    pub file: PathBuf,
+    pub source: String,
+    pub diagnostic: Diagnostic,
+}
+
+pub fn span_to_byte_range(source: &str, span: &Span) -> Range<usize> {
+    let mut line_index = 1usize;
+    let mut line_start = 0usize;
+
+    for line in source.split_inclusive('\n') {
+        if line_index == span.line {
+            let line_body = line.strip_suffix('\n').unwrap_or(line);
+            let start = line_start + col_to_byte_offset(line_body, span.start_col);
+            let end = line_start + col_to_byte_offset(line_body, span.end_col);
+            return start..end.max(start);
+        }
+        line_start += line.len();
+        line_index += 1;
+    }
+
+    0..0
+}
+
+fn col_to_byte_offset(line: &str, column: usize) -> usize {
+    if column <= 1 {
+        return 0;
+    }
+    line.char_indices()
+        .nth(column - 1)
+        .map(|(index, _)| index)
+        .unwrap_or(line.len())
+}
+
+pub fn render_all(diagnostics: &[FileDiagnostic]) {
+    for file_diagnostic in diagnostics {
+        render_one(file_diagnostic, io::stderr()).ok();
+    }
+}
+
+pub fn render_one(file_diagnostic: &FileDiagnostic, writer: impl Write) -> io::Result<()> {
+    let file_id = file_diagnostic.file.display().to_string();
+    let range = span_to_byte_range(&file_diagnostic.source, &file_diagnostic.diagnostic.span);
+    let kind = match file_diagnostic.diagnostic.severity {
+        Severity::Error => ReportKind::Error,
+        Severity::Warning => ReportKind::Warning,
+    };
+
+    let mut builder = Report::build(kind, file_id.as_str(), range.start)
+        .with_message(file_diagnostic.diagnostic.message.clone());
+
+    if let Some(label) = &file_diagnostic.diagnostic.label {
+        builder = builder.with_label(
+            Label::new((file_id.as_str(), range.clone()))
+                .with_message(label.clone())
+                .with_color(Color::Red),
+        );
+    }
+
+    builder.finish().write(
+        (file_id.as_str(), Source::from(file_diagnostic.source.as_str())),
+        writer,
+    )
+}
+
+pub fn render_html_snippet(source: &str, diagnostic: &Diagnostic) -> String {
+    let lines: Vec<&str> = source.lines().collect();
+    let Some(line) = lines.get(diagnostic.span.line.saturating_sub(1)) else {
+        return escape_html(&diagnostic.message);
+    };
+
+    let start = col_to_byte_offset(line, diagnostic.span.start_col);
+    let end = col_to_byte_offset(line, diagnostic.span.end_col).max(start);
+    let before = escape_html(&line[..start]);
+    let highlight = escape_html(&line[start..end]);
+    let after = escape_html(&line[end..]);
+
+    let mut html = format!(
+        "<div class=\"error-message\">{}</div>",
+        escape_html(&diagnostic.message)
+    );
+    if let Some(label) = &diagnostic.label {
+        html.push_str(&format!(
+            "<div class=\"error-label\">{}</div>",
+            escape_html(label)
+        ));
+    }
+    html.push_str(&format!(
+        "<pre class=\"error-snippet\"><span class=\"line-num\">{:>4} </span>{before}<span class=\"highlight\">{highlight}</span>{after}</pre>",
+        diagnostic.span.line
+    ));
+    html
+}
+
+pub fn dev_error_page(file: &Path, source: &str, diagnostic: &Diagnostic) -> String {
+    let snippet = render_html_snippet(source, diagnostic);
+    format!(
+        "<!doctype html><html><head><title>WebScript Error</title><style>\
+        body{{font-family:system-ui,sans-serif;margin:3rem;line-height:1.5}}\
+        .error-message{{font-weight:600;color:#b91c1c;margin-bottom:0.5rem}}\
+        .error-label{{color:#6b7280;margin-bottom:1rem}}\
+        pre.error-snippet{{background:#1f2937;color:#f9fafb;padding:1rem;border-radius:6px;overflow:auto}}\
+        .line-num{{color:#9ca3af}}\
+        .highlight{{background:#7f1d1d;text-decoration:underline wavy #fca5a5}}\
+        .file{{color:#6b7280;font-size:0.875rem;margin-bottom:1rem}}\
+        </style></head><body>\
+        <h1>WebScript Error</h1>\
+        <div class=\"file\">{}:{}:{}</div>\
+        {snippet}\
+        </body></html>",
+        escape_html(&file.display().to_string()),
+        diagnostic.span.line,
+        diagnostic.span.start_col
+    )
+}
+
+fn escape_html(value: &str) -> String {
+    let mut escaped = String::with_capacity(value.len());
+    for char in value.chars() {
+        match char {
+            '&' => escaped.push_str("&amp;"),
+            '<' => escaped.push_str("&lt;"),
+            '>' => escaped.push_str("&gt;"),
+            '"' => escaped.push_str("&quot;"),
+            '\'' => escaped.push_str("&#39;"),
+            _ => escaped.push(char),
+        }
+    }
+    escaped
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn span_to_byte_range_finds_expression() {
+        let source = "@page \"/\"\n\n<h1>{name}</h1>";
+        let range = span_to_byte_range(source, &Span::braced_expr(3, 5, "name"));
+        assert_eq!(&source[range], "{name}");
+    }
+}

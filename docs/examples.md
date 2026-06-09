@@ -96,6 +96,38 @@ This page collects complete examples that combine multiple WebScript features.
 </section>
 ```
 
+## Typed Component Props
+
+```web
+@component PostPreview {
+  title: string
+  rank: int = 0
+  featured: bool = false
+}
+
+<article class="post-preview">
+  @if featured {
+    <strong>Featured</strong>
+  }
+  <h3>{title}</h3>
+  <p>Rank {rank}</p>
+</article>
+```
+
+```web
+@page "/"
+
+@let posts: string[] = ["One", "Two", "Three"]
+
+<main>
+  <PostPreview title="Pinned release notes" rank=1 featured=true />
+
+  @for post in posts {
+    <PostPreview title={post} />
+  }
+</main>
+```
+
 ## Create Post API
 
 ```web
@@ -186,4 +218,3 @@ This page collects complete examples that combine multiple WebScript features.
   }
 }
 ```
-

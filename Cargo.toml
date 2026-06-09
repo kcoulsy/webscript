@@ -3,6 +3,9 @@ name = "webscript"
 version = "0.1.0"
 edition = "2021"
 
+[dependencies]
+ariadne = "0.4"
+
 [[bin]]
 name = "web"
 path = "src/main.rs"

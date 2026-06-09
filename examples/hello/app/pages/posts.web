@@ -1,6 +1,0 @@
-@page "/posts/{slug:string}"
-
-<main>
-  <h1>Post: {slug}</h1>
-  <p>This route is using a typed path parameter.</p>
-</main>

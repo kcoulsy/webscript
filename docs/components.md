@@ -27,7 +27,7 @@ Props are typed:
 
 ```web
 @component Avatar {
-  user: User
+  name: string
   size: int = 40
   rounded: bool = true
 }
@@ -36,8 +36,8 @@ Props are typed:
 Props with defaults are optional:
 
 ```web
-<Avatar user={user} />
-<Avatar user={user} size={80} />
+<Avatar name={name} />
+<Avatar name={name} size=80 />
 ```
 
 ## Required Props
@@ -54,6 +54,40 @@ This is invalid:
 
 ```web
 <ErrorBox />
+```
+
+The current MVP supports self-closing component calls with string, int, bool, and simple identifier expression props:
+
+```web
+@component PostPreview {
+  title: string
+  rank: int = 0
+  featured: bool = false
+}
+
+<article>
+  @if featured {
+    <strong>Featured</strong>
+  }
+  <h3>{title}</h3>
+  <p>Rank {rank}</p>
+</article>
+```
+
+Use it from a page:
+
+```web
+@page "/"
+
+@let posts: string[] = ["One", "Two", "Three"]
+
+<main>
+  <PostPreview title="Pinned release notes" rank=1 featured=true />
+
+  @for post in posts {
+    <PostPreview title={post} />
+  }
+</main>
 ```
 
 ## Slots
@@ -167,4 +201,3 @@ A component should own:
 - Its client behavior, if any.
 
 It should not mutate parent state directly. Use actions, events, or form submissions for mutations.
-

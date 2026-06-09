@@ -1,6 +1,6 @@
 @page "/"
 
-@let name: string = "WebScript"
+@let name: string = "sdf"
 @let showIntro: bool = false
 @let posts: string[] = ["One", "Two", "Three"]
 
@@ -14,7 +14,9 @@
   }
 
   <h2>Posts</h2>
+  <PostPreview title="Pinned release notes" rank=1 featured=true />
+
   @for post in posts {
-    <p>{post}</p>
+    <PostPreview title={post} />
   }
 </main>

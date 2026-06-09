@@ -56,7 +56,7 @@ Supported today:
 - `web check` parses `.web` files and validates template bindings, simple `@if` conditions, and `@for` loops.
 - `web serve --port 3000` serves pages directly from `.web` files.
 
-The first supported language slice is intentionally small, but now includes template expressions, bool `@if` blocks, array `@let` values, scoped `@for` loops, and simple `string`/`int` route params:
+The first supported language slice is intentionally small, but now includes template expressions, bool `@if` blocks, array `@let` values, scoped `@for` loops, typed component props, and simple `string`/`int` route params:
 
 ```web
 @page "/"
@@ -73,7 +73,7 @@ The first supported language slice is intentionally small, but now includes temp
   }
 
   @for post in posts {
-    <p>{post}</p>
+    <PostPreview title={post} />
   }
 </main>
 ```
