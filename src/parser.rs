@@ -1,5 +1,5 @@
 use crate::diagnostic::{Diagnostic, Span};
-use std::collections::BTreeMap;
+use crate::expr;
 
 fn parse_diagnostic(
     line: usize,
@@ -18,8 +18,24 @@ fn parse_diagnostic_line(line: usize, message: impl Into<String>) -> Diagnostic 
 pub struct WebFile {
     pub route: Option<RoutePattern>,
     pub component: Option<ComponentDecl>,
-    pub lets: BTreeMap<String, Value>,
+    pub lets: Vec<LetDecl>,
     pub template: Vec<TemplateNode>,
+}
+
+#[derive(Debug, Clone)]
+pub struct LetDecl {
+    pub name: String,
+    pub type_name: Option<String>,
+    pub value: LetValue,
+    pub line: usize,
+    pub value_start_col: usize,
+    pub value_end_col: usize,
+}
+
+#[derive(Debug, Clone)]
+pub enum LetValue {
+    Expr(expr::Expr),
+    Static(Value),
 }
 
 #[derive(Debug, Clone)]
@@ -66,7 +82,8 @@ pub enum TemplateNode {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceExpr {
-    pub name: String,
+    pub source: String,
+    pub expr: expr::Expr,
     pub line: usize,
     pub column: usize,
 }
@@ -165,7 +182,7 @@ fn sample_value(type_name: &str) -> Option<Value> {
 pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
     let mut route = None;
     let mut component = None;
-    let mut lets = BTreeMap::new();
+    let mut lets = Vec::new();
     let mut template_start = None;
     let lines: Vec<&str> = source.lines().collect();
     let mut line_index = 0;
@@ -204,8 +221,7 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
         }
 
         if trimmed.starts_with("@let") {
-            let (name, value) = parse_let(trimmed, line_number)?;
-            lets.insert(name, value);
+            lets.push(parse_let(trimmed, line_number)?);
             line_index += 1;
             continue;
         }
@@ -241,7 +257,7 @@ fn parse_nodes(
     lines: &[&str],
     cursor: &mut usize,
     stop_on_close: bool,
-    lets: &mut BTreeMap<String, Value>,
+    lets: &mut Vec<LetDecl>,
 ) -> Result<Vec<TemplateNode>, Diagnostic> {
     let mut nodes = Vec::new();
 
@@ -271,8 +287,7 @@ fn parse_nodes(
         }
 
         if trimmed.starts_with("@let") {
-            let (name, value) = parse_let(trimmed, line_number)?;
-            lets.insert(name, value);
+            lets.push(parse_let(trimmed, line_number)?);
             *cursor += 1;
             continue;
         }
@@ -500,23 +515,16 @@ fn parse_prop_value(
         if let Some(literal) = parse_prop_literal(inner) {
             return Ok((PropValue::Literal(literal), end + 2));
         }
-        let name = inner;
-        if !is_identifier(name) {
-            return Err(parse_diagnostic(
-                line_number,
-                value_start_col,
-                value_start_col + value.len().min(end + 2),
-                "component prop expressions must be simple identifiers",
-            ));
-        }
         let expr_col = value_start_col
             + value[..end + 1]
-                .find(name)
+                .find(inner)
                 .map(|index| index + 1)
                 .unwrap_or(1);
+        let expr = expr::parse(inner, line_number, expr_col)?;
         return Ok((
             PropValue::Expr(SourceExpr {
-                name: name.to_string(),
+                source: inner.to_string(),
+                expr,
                 line: line_number,
                 column: expr_col,
             }),
@@ -575,7 +583,7 @@ fn is_block_close(trimmed: &str) -> bool {
 fn parse_for(
     lines: &[&str],
     cursor: &mut usize,
-    lets: &mut BTreeMap<String, Value>,
+    lets: &mut Vec<LetDecl>,
 ) -> Result<TemplateNode, Diagnostic> {
     let raw_line = lines[*cursor];
     let line_number = *cursor + 1;
@@ -588,11 +596,11 @@ fn parse_for(
         .strip_suffix('{')
         .ok_or_else(|| parse_diagnostic_line(line_number, "@for expects `@for item in items {`"))?
         .trim();
-    let (item_name, source_name) = header
+    let (item_name, source_text) = header
         .split_once(" in ")
         .ok_or_else(|| parse_diagnostic_line(line_number, "@for expects `@for item in items {`"))?;
     let item_name = item_name.trim();
-    let source_name = source_name.trim();
+    let source_text = source_text.trim();
 
     if !is_identifier(item_name) {
         return Err(parse_diagnostic_line(
@@ -600,17 +608,11 @@ fn parse_for(
             format!("invalid loop variable `{item_name}`"),
         ));
     }
-    if !is_identifier(source_name) {
-        return Err(parse_diagnostic_line(
-            line_number,
-            format!("invalid loop source `{source_name}`"),
-        ));
-    }
-
     let source_column = raw_line
-        .find(source_name)
+        .find(source_text)
         .map(|index| index + 1)
         .unwrap_or(1);
+    let source_expr = expr::parse(source_text, line_number, source_column)?;
 
     *cursor += 1;
     let body = parse_nodes(lines, cursor, true, lets)?;
@@ -623,7 +625,8 @@ fn parse_for(
     Ok(TemplateNode::For {
         item_name: item_name.to_string(),
         source: SourceExpr {
-            name: source_name.to_string(),
+            source: source_text.to_string(),
+            expr: source_expr,
             line: line_number,
             column: source_column,
         },
@@ -634,13 +637,13 @@ fn parse_for(
 fn parse_if(
     lines: &[&str],
     cursor: &mut usize,
-    lets: &mut BTreeMap<String, Value>,
+    lets: &mut Vec<LetDecl>,
 ) -> Result<TemplateNode, Diagnostic> {
     let raw_line = lines[*cursor];
     let line_number = *cursor + 1;
     let trimmed = raw_line.trim();
 
-    let condition_name = trimmed
+    let condition_source = trimmed
         .strip_prefix("@if")
         .expect("@if prefix already checked")
         .trim()
@@ -648,17 +651,11 @@ fn parse_if(
         .ok_or_else(|| parse_diagnostic_line(line_number, "@if expects `@if condition {`"))?
         .trim();
 
-    if !is_identifier(condition_name) {
-        return Err(parse_diagnostic_line(
-            line_number,
-            "@if condition must be a simple identifier in the MVP",
-        ));
-    }
-
     let column = raw_line
-        .find(condition_name)
+        .find(condition_source)
         .map(|index| index + 1)
         .unwrap_or(1);
+    let condition_expr = expr::parse(condition_source, line_number, column)?;
 
     *cursor += 1;
     let then_nodes = parse_nodes(lines, cursor, true, lets)?;
@@ -693,7 +690,8 @@ fn parse_if(
 
     Ok(TemplateNode::If {
         condition: SourceExpr {
-            name: condition_name.to_string(),
+            source: condition_source.to_string(),
+            expr: condition_expr,
             line: line_number,
             column,
         },
@@ -719,22 +717,27 @@ fn parse_text_line(line: &str, line_number: usize) -> Vec<TemplateNode> {
         };
 
         let expr_end = expr_start + end;
-        let name = line[expr_start..expr_end].trim();
+        let source = line[expr_start..expr_end].trim();
         let column = line[expr_start..expr_end]
-            .find(name)
+            .find(source)
             .map(|inner| expr_start + inner + 1)
             .unwrap_or(expr_start + 1);
 
-        if name.is_empty() || !is_identifier(name) {
+        if source.is_empty() {
             nodes.push(TemplateNode::Text(
                 line[absolute_start..=expr_end].to_string(),
             ));
-        } else {
+        } else if let Ok(expr) = expr::parse(source, line_number, column) {
             nodes.push(TemplateNode::Expr(SourceExpr {
-                name: name.to_string(),
+                source: source.to_string(),
+                expr,
                 line: line_number,
                 column,
             }));
+        } else {
+            nodes.push(TemplateNode::Text(
+                line[absolute_start..=expr_end].to_string(),
+            ));
         }
 
         offset = expr_end + 1;
@@ -796,19 +799,19 @@ fn parse_route_params(raw: &str, line_number: usize) -> Result<Vec<RouteParam>, 
     Ok(params)
 }
 
-fn parse_let(line: &str, line_number: usize) -> Result<(String, Value), Diagnostic> {
+fn parse_let(line: &str, line_number: usize) -> Result<LetDecl, Diagnostic> {
     let rest = line
         .strip_prefix("@let")
         .expect("@let prefix already checked")
         .trim();
     let (left, right) = rest
         .split_once('=')
-        .ok_or_else(|| parse_diagnostic_line(line_number, "@let expects `name: type = value`"))?;
-    let (name, type_name) = left
-        .split_once(':')
-        .ok_or_else(|| parse_diagnostic_line(line_number, "@let expects an explicit type"))?;
+        .ok_or_else(|| parse_diagnostic_line(line_number, "@let expects `name = value`"))?;
+    let (name, type_name) = match left.split_once(':') {
+        Some((name, type_name)) => (name.trim(), Some(type_name.trim())),
+        None => (left.trim(), None),
+    };
 
-    let name = name.trim();
     if !is_identifier(name) {
         return Err(parse_diagnostic_line(
             line_number,
@@ -818,14 +821,24 @@ fn parse_let(line: &str, line_number: usize) -> Result<(String, Value), Diagnost
 
     let value_text = right.trim();
     let value_col = line.find(value_text).map(|index| index + 1).unwrap_or(1);
-    let value = parse_value(
-        type_name.trim(),
-        value_text,
-        line_number,
-        value_col,
-        value_col + value_text.len(),
-    )?;
-    Ok((name.to_string(), value))
+    let value = match type_name {
+        Some(type_name) if type_name.ends_with("[]") => LetValue::Static(parse_value(
+            type_name,
+            value_text,
+            line_number,
+            value_col,
+            value_col + value_text.len(),
+        )?),
+        Some(_) | None => LetValue::Expr(expr::parse(value_text, line_number, value_col)?),
+    };
+    Ok(LetDecl {
+        name: name.to_string(),
+        type_name: type_name.map(str::to_string),
+        value,
+        line: line_number,
+        value_start_col: value_col,
+        value_end_col: value_col + value_text.len(),
+    })
 }
 
 fn parse_value(
@@ -985,7 +998,7 @@ fn is_component_name(value: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse, PropValue, TemplateNode, Value};
+    use super::{parse, LetValue, PropValue, TemplateNode, Value};
 
     #[test]
     fn parses_page_lets_and_template_ast() {
@@ -995,9 +1008,25 @@ mod tests {
         .expect("valid page");
 
         assert_eq!(parsed.route.as_ref().expect("route").raw, "/");
-        assert!(matches!(parsed.lets.get("name"), Some(Value::String(value)) if value == "Ada"));
-        assert!(matches!(parsed.lets.get("visits"), Some(Value::Int(3))));
+        assert_eq!(parsed.lets[0].name, "name");
+        assert_eq!(parsed.lets[0].type_name.as_deref(), Some("string"));
+        assert_eq!(parsed.lets[1].name, "visits");
+        assert_eq!(parsed.lets[1].type_name.as_deref(), Some("int"));
         assert!(matches!(parsed.template[1], TemplateNode::Expr(_)));
+    }
+
+    #[test]
+    fn parses_typed_and_inferred_let_expressions() {
+        let parsed = parse(
+            "@page \"/\"\n\n@let name = \"Ada\"\n@let visits: int = 2 + 3\n@let label = \"Hello \" + name\n\n<h1>{label}</h1>",
+        )
+        .expect("valid page");
+
+        assert_eq!(parsed.lets[0].name, "name");
+        assert_eq!(parsed.lets[0].type_name, None);
+        assert_eq!(parsed.lets[1].name, "visits");
+        assert_eq!(parsed.lets[1].type_name.as_deref(), Some("int"));
+        assert_eq!(parsed.lets[2].name, "label");
     }
 
     #[test]
@@ -1013,7 +1042,7 @@ mod tests {
     #[test]
     fn parses_if_else() {
         let parsed = parse(
-            "@page \"/\"\n\n@let show: bool = true\n\n@if show {\n<p>yes</p>\n} @else {\n<p>no</p>\n}",
+            "@page \"/\"\n\n@let visits: int = 3\n\n@if visits > 1 {\n<p>yes</p>\n} @else {\n<p>no</p>\n}",
         )
         .expect("valid page");
 
@@ -1027,9 +1056,10 @@ mod tests {
         )
         .expect("valid page");
 
-        assert!(
-            matches!(parsed.lets.get("posts"), Some(Value::Array { values, .. }) if values.len() == 3)
-        );
+        assert!(matches!(
+            &parsed.lets[0].value,
+            LetValue::Static(Value::Array { values, .. }) if values.len() == 3
+        ));
         assert!(
             matches!(&parsed.template[0], TemplateNode::For { item_name, .. } if item_name == "post")
         );
@@ -1067,9 +1097,10 @@ mod tests {
         let parsed = parse("@page \"/\"\n\n@let name: string = \"Ada\"\n<h1>{name}</h1>\n@let greeting: string = \"Hello\"\n<p>{greeting}</p>")
             .expect("valid page");
 
-        assert!(
-            matches!(parsed.lets.get("greeting"), Some(Value::String(value)) if value == "Hello")
-        );
+        assert!(parsed
+            .lets
+            .iter()
+            .any(|let_decl| let_decl.name == "greeting"));
         assert!(!parsed
             .template
             .iter()

@@ -1,6 +1,8 @@
 use crate::diagnostic::{Diagnostic, Span};
+use crate::expr;
 use crate::parser::{
-    ComponentCall, ComponentProp, PropValue, SourceExpr, TemplateNode, Value, WebFile,
+    ComponentCall, ComponentProp, LetDecl, LetValue, PropValue, SourceExpr, TemplateNode, Value,
+    WebFile,
 };
 use std::collections::BTreeMap;
 
@@ -12,18 +14,24 @@ pub fn render_with_components(
     params: &Scope,
     components: &ComponentRegistry,
 ) -> Result<String, Diagnostic> {
-    let scope = scope_for(file, params);
+    let scope = scope_for(file, params)?;
     render_nodes(&file.template, &scope, components)
 }
 
 pub fn validate_with_components(file: &WebFile, components: &ComponentRegistry) -> Vec<Diagnostic> {
-    let scope = scope_for(file, &Scope::new());
     let mut diagnostics = Vec::new();
+    let scope = match scope_for(file, &Scope::new()) {
+        Ok(scope) => scope,
+        Err(error) => {
+            diagnostics.push(error);
+            base_scope_for(file, &Scope::new())
+        }
+    };
     validate_nodes(&file.template, &scope, components, &mut diagnostics);
     diagnostics
 }
 
-fn scope_for(file: &WebFile, params: &Scope) -> Scope {
+fn base_scope_for(file: &WebFile, params: &Scope) -> Scope {
     let mut scope = Scope::new();
 
     if let Some(route) = &file.route {
@@ -44,11 +52,50 @@ fn scope_for(file: &WebFile, params: &Scope) -> Scope {
     for (name, value) in params {
         scope.insert(name.clone(), value.clone());
     }
-    for (name, value) in &file.lets {
-        scope.insert(name.clone(), value.clone());
-    }
 
     scope
+}
+
+fn scope_for(file: &WebFile, params: &Scope) -> Result<Scope, Diagnostic> {
+    let mut scope = base_scope_for(file, params);
+    evaluate_lets(&file.lets, &mut scope)?;
+    Ok(scope)
+}
+
+fn evaluate_lets(lets: &[LetDecl], scope: &mut Scope) -> Result<(), Diagnostic> {
+    for let_decl in lets {
+        let value = match &let_decl.value {
+            LetValue::Static(value) => value.clone(),
+            LetValue::Expr(expr) => {
+                expr::evaluate(expr, scope, let_decl.line, let_decl.value_start_col)?
+            }
+        };
+
+        if let Some(type_name) = &let_decl.type_name {
+            if !type_names_match(&value.type_name(), type_name) {
+                return Err(Diagnostic::error(
+                    Span::new(
+                        let_decl.line,
+                        let_decl.value_start_col,
+                        let_decl.value_end_col,
+                    ),
+                    format!(
+                        "@let `{}` expects `{type_name}`, found `{}`",
+                        let_decl.name,
+                        value.type_name()
+                    ),
+                    Some(format!(
+                        "expected `{type_name}`, found `{}`",
+                        value.type_name()
+                    )),
+                ));
+            }
+        }
+
+        scope.insert(let_decl.name.clone(), value);
+    }
+
+    Ok(())
 }
 
 fn render_nodes(
@@ -62,9 +109,7 @@ fn render_nodes(
         match node {
             TemplateNode::Text(value) => html.push_str(value),
             TemplateNode::Expr(expr) => {
-                let value = scope
-                    .get(&expr.name)
-                    .ok_or_else(|| unknown_expression(expr))?;
+                let value = evaluate_source_expr(expr, scope)?;
                 html.push_str(&escape_html(&value.render()));
             }
             TemplateNode::Component(call) => {
@@ -75,9 +120,7 @@ fn render_nodes(
                 then_nodes,
                 else_nodes,
             } => {
-                let value = scope
-                    .get(&condition.name)
-                    .ok_or_else(|| unknown_condition(condition))?;
+                let value = evaluate_source_expr(condition, scope)?;
                 let Some(condition_value) = value.as_bool() else {
                     return Err(if_condition_not_bool(condition));
                 };
@@ -93,16 +136,14 @@ fn render_nodes(
                 source,
                 body,
             } => {
-                let value = scope
-                    .get(&source.name)
-                    .ok_or_else(|| unknown_loop_source(source))?;
+                let value = evaluate_source_expr(source, scope)?;
                 let Some(items) = value.as_array() else {
                     return Err(for_source_not_array(source));
                 };
 
-                for item in items {
+                for item in items.to_vec() {
                     let mut loop_scope = scope.clone();
-                    loop_scope.insert(item_name.clone(), item.clone());
+                    loop_scope.insert(item_name.clone(), item);
                     html.push_str(&render_nodes(body, &loop_scope, components)?);
                 }
             }
@@ -167,9 +208,7 @@ fn component_scope(
         }
     }
 
-    for (name, value) in &component.lets {
-        scope.insert(name.clone(), value.clone());
-    }
+    evaluate_lets(&component.lets, &mut scope)?;
 
     Ok(scope)
 }
@@ -181,10 +220,13 @@ fn evaluate_prop_value(
 ) -> Result<Value, Diagnostic> {
     match value {
         PropValue::Literal(value) => Ok(value.clone()),
-        PropValue::Expr(expr) => scope
-            .get(&expr.name)
-            .cloned()
-            .ok_or_else(|| unknown_prop_expression(expr, prop)),
+        PropValue::Expr(expr) => evaluate_source_expr(expr, scope).map_err(|error| {
+            Diagnostic::error(
+                Span::new(prop.line, prop.value_start_col, prop.value_end_col),
+                error.message,
+                error.label,
+            )
+        }),
     }
 }
 
@@ -198,8 +240,8 @@ fn validate_nodes(
         match node {
             TemplateNode::Text(_) => {}
             TemplateNode::Expr(expr) => {
-                if !scope.contains_key(&expr.name) {
-                    diagnostics.push(unknown_expression(expr));
+                if let Err(error) = evaluate_source_expr(expr, scope) {
+                    diagnostics.push(error);
                 }
             }
             TemplateNode::Component(call) => {
@@ -210,10 +252,10 @@ fn validate_nodes(
                 then_nodes,
                 else_nodes,
             } => {
-                match scope.get(&condition.name) {
-                    Some(value) if value.as_bool().is_some() => {}
-                    Some(_) => diagnostics.push(if_condition_not_bool(condition)),
-                    None => diagnostics.push(unknown_condition(condition)),
+                match evaluate_source_expr(condition, scope) {
+                    Ok(value) if value.as_bool().is_some() => {}
+                    Ok(_) => diagnostics.push(if_condition_not_bool(condition)),
+                    Err(error) => diagnostics.push(error),
                 }
                 validate_nodes(then_nodes, scope, components, diagnostics);
                 validate_nodes(else_nodes, scope, components, diagnostics);
@@ -222,16 +264,16 @@ fn validate_nodes(
                 item_name,
                 source,
                 body,
-            } => match scope.get(&source.name) {
-                Some(value) if value.as_array().is_some() => {
+            } => match evaluate_source_expr(source, scope) {
+                Ok(value) if value.as_array().is_some() => {
                     let mut loop_scope = scope.clone();
                     if let Some(sample) = value.array_sample() {
                         loop_scope.insert(item_name.clone(), sample);
                     }
                     validate_nodes(body, &loop_scope, components, diagnostics);
                 }
-                Some(_) => diagnostics.push(for_source_not_array(source)),
-                None => diagnostics.push(unknown_loop_source(source)),
+                Ok(_) => diagnostics.push(for_source_not_array(source)),
+                Err(error) => diagnostics.push(error),
             },
         }
     }
@@ -291,49 +333,42 @@ fn prop_value_type(
 ) -> Result<String, Diagnostic> {
     match value {
         PropValue::Literal(value) => Ok(value.type_name()),
-        PropValue::Expr(expr) => scope
-            .get(&expr.name)
-            .map(Value::type_name)
-            .ok_or_else(|| unknown_prop_expression(expr, prop)),
+        PropValue::Expr(expr) => evaluate_source_expr(expr, scope)
+            .map(|value| value.type_name())
+            .map_err(|error| {
+                Diagnostic::error(
+                    Span::new(prop.line, prop.value_start_col, prop.value_end_col),
+                    error.message,
+                    error.label,
+                )
+            }),
     }
 }
 
-fn unknown_expression(expr: &SourceExpr) -> Diagnostic {
-    Diagnostic::error(
-        Span::braced_expr(expr.line, expr.column.saturating_sub(1), &expr.name),
-        format!("unknown expression `{name}`", name = expr.name),
-        None,
-    )
-}
-
-fn unknown_condition(condition: &SourceExpr) -> Diagnostic {
-    Diagnostic::error(
-        Span::identifier(condition.line, condition.column, &condition.name),
-        format!("unknown condition `{name}`", name = condition.name),
-        None,
-    )
+fn evaluate_source_expr(expr: &SourceExpr, scope: &Scope) -> Result<Value, Diagnostic> {
+    expr::evaluate(&expr.expr, scope, expr.line, expr.column)
 }
 
 fn if_condition_not_bool(condition: &SourceExpr) -> Diagnostic {
     Diagnostic::error(
-        Span::identifier(condition.line, condition.column, &condition.name),
-        format!("@if condition `{name}` must be bool", name = condition.name),
+        Span::new(
+            condition.line,
+            condition.column,
+            condition.column + condition.source.len(),
+        ),
+        format!("@if condition `{}` must be bool", condition.source),
         Some("expected `bool`".to_string()),
-    )
-}
-
-fn unknown_loop_source(source: &SourceExpr) -> Diagnostic {
-    Diagnostic::error(
-        Span::identifier(source.line, source.column, &source.name),
-        format!("unknown loop source `{name}`", name = source.name),
-        None,
     )
 }
 
 fn for_source_not_array(source: &SourceExpr) -> Diagnostic {
     Diagnostic::error(
-        Span::identifier(source.line, source.column, &source.name),
-        format!("@for source `{name}` must be array", name = source.name),
+        Span::new(
+            source.line,
+            source.column,
+            source.column + source.source.len(),
+        ),
+        format!("@for source `{}` must be array", source.source),
         Some("expected array type".to_string()),
     )
 }
@@ -389,14 +424,6 @@ fn prop_type_mismatch(
             prop = prop.name
         ),
         Some(format!("expected `{expected}`, found `{found}`")),
-    )
-}
-
-fn unknown_prop_expression(expr: &SourceExpr, prop: &ComponentProp) -> Diagnostic {
-    Diagnostic::error(
-        Span::new(prop.line, prop.value_start_col, prop.value_end_col),
-        format!("unknown prop expression `{name}`", name = expr.name),
-        None,
     )
 }
 
@@ -457,9 +484,41 @@ mod tests {
     }
 
     #[test]
+    fn renders_expression_interpolation() {
+        let file = parse(
+            "@page \"/\"\n\n@let name = \"Ada\"\n@let visits: int = 2\n\n<h1>{\"Hello \" + name}</h1>\n<p>{visits + 1}</p>",
+        )
+        .expect("valid page");
+
+        assert_eq!(
+            render_with_components(&file, &Scope::new(), &ComponentRegistry::new())
+                .expect("rendered"),
+            "<h1>Hello Ada</h1>\n<p>3</p>"
+        );
+    }
+
+    #[test]
+    fn renders_lets_that_depend_on_route_params() {
+        let file = parse(
+            "@page \"/posts/{slug:string}\"\n\n@let title = \"Post: \" + slug\n@let isIntro = slug == \"intro\"\n\n<h1>{title}</h1>\n@if isIntro {\n<p>intro</p>\n}",
+        )
+        .expect("valid page");
+        let mut params = Scope::new();
+        params.insert(
+            "slug".to_string(),
+            crate::parser::Value::String("intro".to_string()),
+        );
+
+        assert_eq!(
+            render_with_components(&file, &params, &ComponentRegistry::new()).expect("rendered"),
+            "<h1>Post: intro</h1>\n<p>intro</p>"
+        );
+    }
+
+    #[test]
     fn renders_if_else() {
         let file = parse(
-            "@page \"/\"\n\n@let show: bool = false\n\n@if show {\n<p>yes</p>\n} @else {\n<p>no</p>\n}",
+            "@page \"/\"\n\n@let visits: int = 1\n\n@if visits > 1 {\n<p>yes</p>\n} @else {\n<p>no</p>\n}",
         )
         .expect("valid page");
 
@@ -480,7 +539,7 @@ mod tests {
             .expect_err("post should be scoped to loop");
 
         assert_eq!(error.message, "unknown expression `post`");
-        assert_eq!(error.span, Span::braced_expr(8, 4, "post"));
+        assert_eq!(error.span, Span::identifier(8, 5, "post"));
 
         let file = parse(
             "@page \"/\"\n\n@let posts: string[] = [\"One\", \"<Two>\"]\n\n@for post in posts {\n<p>{post}</p>\n}",
@@ -512,7 +571,7 @@ mod tests {
 
         let diagnostics = super::validate_with_components(&file, &ComponentRegistry::new());
         assert_eq!(diagnostics.len(), 2);
-        assert_eq!(diagnostics[0].message, "unknown loop source `posts`");
+        assert_eq!(diagnostics[0].message, "unknown expression `posts`");
         assert_eq!(diagnostics[1].message, "unknown expression `post`");
     }
 
@@ -522,14 +581,16 @@ mod tests {
             "@component UserCard {\n  name: string\n  visits: int = 0\n}\n\n<article>{name}: {visits}</article>",
         )
         .expect("valid component");
-        let page = parse("@page \"/\"\n\n@let name: string = \"Ada\"\n\n<UserCard name={name} />")
-            .expect("valid page");
+        let page = parse(
+            "@page \"/\"\n\n@let name: string = \"Ada\"\n\n<UserCard name={\"Dr. \" + name} />",
+        )
+        .expect("valid page");
         let mut components = ComponentRegistry::new();
         components.insert("UserCard".to_string(), component);
 
         assert_eq!(
             render_with_components(&page, &Scope::new(), &components).expect("rendered"),
-            "<article>Ada: 0</article>"
+            "<article>Dr. Ada: 0</article>"
         );
     }
 
@@ -600,6 +661,6 @@ mod tests {
             .expect_err("unknown expression should fail");
 
         assert_eq!(error.message, "unknown expression `name`");
-        assert_eq!(error.span, Span::braced_expr(3, 5, "name"));
+        assert_eq!(error.span, Span::identifier(3, 6, "name"));
     }
 }

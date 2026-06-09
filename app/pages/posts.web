@@ -1,6 +1,15 @@
 @page "/posts/{slug:string}"
 
+@let title = "Post: " + slug
+@let isIntro = slug == "intro"
+
 <main>
-  <h1>Post: {slug}</h1>
+  <h1>{title}</h1>
   <p>This route is using a typed path parameter.</p>
+
+  @if isIntro {
+    <p>This post gets special copy because the route param matched "intro".</p>
+  } @else {
+    <p>Try /posts/intro to see an equality expression change this branch.</p>
+  }
 </main>

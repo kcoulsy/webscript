@@ -1,3 +1,4 @@
+use crate::debugbar::RequestMetrics;
 use crate::dev;
 use crate::diagnostic::{self, FileDiagnostic};
 use crate::project;
@@ -8,6 +9,7 @@ use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::Instant;
 
 pub fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String> {
     match project::check_project(&root) {
@@ -96,10 +98,14 @@ fn handle_connection(
         return Ok(());
     }
 
+    let started = Instant::now();
+    let mut metrics = RequestMetrics::new(path);
+
     let mut runtime = runtime
         .lock()
         .map_err(|_| io_diagnostic("project runtime lock poisoned".to_string()))?;
 
+    let route_started = Instant::now();
     let (route_file, source, parsed, params) = match runtime.load_route_with_source(path) {
         Ok(Some(value)) => value,
         Ok(None) => {
@@ -107,27 +113,48 @@ fn handle_connection(
                 .map_err(|error| io_diagnostic(error))?;
             return Ok(());
         }
-        Err(diagnostic) => return respond_diagnostic(&mut stream, diagnostic),
+        Err(diagnostic) => {
+            metrics.push("Route", route_started.elapsed(), None);
+            metrics.set_total(started.elapsed());
+            return respond_diagnostic(&mut stream, diagnostic, Some(metrics));
+        }
     };
+    metrics.push("Route", route_started.elapsed(), None);
+    metrics.route_file = Some(route_file.clone());
 
+    let components_started = Instant::now();
     let components = match runtime.load_components() {
         Ok(components) => components,
-        Err(diagnostic) => return respond_diagnostic(&mut stream, diagnostic),
+        Err(diagnostic) => {
+            metrics.push("Components", components_started.elapsed(), None);
+            metrics.set_total(started.elapsed());
+            return respond_diagnostic(&mut stream, diagnostic, Some(metrics));
+        }
     };
+    metrics.push("Components", components_started.elapsed(), None);
 
+    let render_started = Instant::now();
     match render::render_with_components(&parsed, &params, &components) {
         Ok(html) => {
+            metrics.push("Render", render_started.elapsed(), None);
+            metrics.set_total(started.elapsed());
             write_response(
                 &mut stream,
                 200,
                 "text/html; charset=utf-8",
-                &dev::DevServer::inject_client(&html),
+                &dev::DevServer::inject_dev_tools(&html, Some(&metrics)),
             )
             .map_err(|error| io_diagnostic(error))?;
             Ok(())
         }
         Err(error) => {
-            respond_diagnostic(&mut stream, FileDiagnostic::new(route_file, source, error))
+            metrics.push("Render", render_started.elapsed(), None);
+            metrics.set_total(started.elapsed());
+            respond_diagnostic(
+                &mut stream,
+                FileDiagnostic::new(route_file, source, error),
+                Some(metrics),
+            )
         }
     }
 }
@@ -135,12 +162,13 @@ fn handle_connection(
 fn respond_diagnostic(
     stream: &mut TcpStream,
     diagnostic: FileDiagnostic,
+    metrics: Option<RequestMetrics>,
 ) -> Result<(), FileDiagnostic> {
     write_response(
         stream,
         500,
         "text/html; charset=utf-8",
-        &dev::DevServer::inject_client(&diagnostic.dev_error_html()),
+        &dev::DevServer::inject_dev_tools(&diagnostic.dev_error_html(), metrics.as_ref()),
     )
     .map_err(|error| io_diagnostic(error))?;
     Err(diagnostic)

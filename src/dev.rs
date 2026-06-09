@@ -1,3 +1,4 @@
+use crate::debugbar::{self, RequestMetrics};
 use std::collections::BTreeMap;
 use std::fs;
 use std::io::Write;
@@ -70,22 +71,28 @@ impl DevServer {
 "#
     }
 
-    pub fn inject_client(html: &str) -> String {
+    pub fn inject_dev_tools(html: &str, metrics: Option<&RequestMetrics>) -> String {
         let script = r#"<script src="/.web/dev-client.js"></script>"#;
         if html.contains(script) {
             return html.to_string();
         }
 
+        let mut fragment = String::new();
+        if let Some(metrics) = metrics {
+            fragment.push_str(&debugbar::render_html(metrics));
+        }
+        fragment.push_str(script);
+
         if let Some(index) = html.rfind("</body>") {
-            let mut injected = String::with_capacity(html.len() + script.len());
+            let mut injected = String::with_capacity(html.len() + fragment.len());
             injected.push_str(&html[..index]);
-            injected.push_str(script);
+            injected.push_str(&fragment);
             injected.push_str(&html[index..]);
             injected
         } else {
-            let mut injected = String::with_capacity(html.len() + script.len());
+            let mut injected = String::with_capacity(html.len() + fragment.len());
             injected.push_str(html);
-            injected.push_str(script);
+            injected.push_str(&fragment);
             injected
         }
     }
@@ -345,13 +352,15 @@ fn base64_encode(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::{base64_encode, websocket_accept_key, DevServer};
+    use crate::debugbar::RequestMetrics;
+    use std::time::Duration;
 
     #[test]
     fn injects_client_before_body_close() {
         let html = "<html><body><main>Hello</main></body></html>";
 
         assert_eq!(
-            DevServer::inject_client(html),
+            DevServer::inject_dev_tools(html, None),
             r#"<html><body><main>Hello</main><script src="/.web/dev-client.js"></script></body></html>"#
         );
     }
@@ -361,9 +370,37 @@ mod tests {
         let html = "<main>Hello</main>";
 
         assert_eq!(
-            DevServer::inject_client(html),
+            DevServer::inject_dev_tools(html, None),
             r#"<main>Hello</main><script src="/.web/dev-client.js"></script>"#
         );
+    }
+
+    #[test]
+    fn injects_debug_bar_before_hot_reload_script() {
+        let html = "<html><body><main>Hello</main></body></html>";
+        let mut metrics = RequestMetrics::new("/");
+        metrics.push("Render", Duration::from_millis(2), None);
+        metrics.set_total(Duration::from_millis(2));
+
+        let injected = DevServer::inject_dev_tools(html, Some(&metrics));
+
+        let debug_index = injected.find("webscript-debugbar").expect("debug bar");
+        let script_index = injected
+            .find(r#"<script src="/.web/dev-client.js"></script>"#)
+            .expect("dev client script");
+        assert!(debug_index < script_index);
+    }
+
+    #[test]
+    fn appends_debug_bar_and_client_when_body_is_missing() {
+        let html = "<main>Hello</main>";
+        let mut metrics = RequestMetrics::new("/posts");
+        metrics.set_total(Duration::from_millis(1));
+
+        let injected = DevServer::inject_dev_tools(html, Some(&metrics));
+
+        assert!(injected.contains("webscript-debugbar"));
+        assert!(injected.ends_with(r#"<script src="/.web/dev-client.js"></script>"#));
     }
 
     #[test]

@@ -40,10 +40,18 @@ Comments are ignored by the parser and not emitted to HTML.
 
 ## Variables
 
-Use `@let` inside markup for simple synchronous values:
+Use `@let` inside markup for simple synchronous values. Types can be explicit:
 
 ```web
 @let isEmpty: bool = posts.length == 0
+```
+
+For local values, the MVP can infer primitive types from expressions:
+
+```web
+@let name = "WebScript"
+@let visits = 2 + 3
+@let greeting = "Hello " + name
 ```
 
 Inside server logic blocks, use typed declarations:
@@ -173,6 +181,17 @@ Expressions can be used in `{...}`:
 <button disabled={isSubmitting}>Save</button>
 ```
 
+The MVP supports identifiers, string/int/bool literals, parentheses, `!`,
+`+`, `-`, comparisons, equality, `&&`, and `||`:
+
+```web
+<h1>{"Hello " + name}</h1>
+
+@if visits > 3 && isReady {
+  <p>{visits + 1}</p>
+}
+```
+
 Expressions should be side-effect free inside markup. Mutations belong in `@action`, `@do`, event handlers, or server logic.
 
 ## Directives
@@ -209,4 +228,3 @@ Common directives:
 @style
 @deploy
 ```
-

@@ -1,22 +1,26 @@
 @page "/"
 
-@let name: string = "aaa"
-@let showIntro: bool = false
+@let name = "aaa"
+@let visits = 2 + 3
+@let greeting = "Hello " + name
+@let ready = visits == 5 && name != "Guest"
+@let boosted = (visits + 1) > 5
 @let posts: string[] = ["One", "Two", "Three"]
 
 <main>
-  <h1>Hello {name}</h1>
+  <h1>{greeting}</h1>
+  <p>Visit count: {visits + 1}</p>
 
-  @if showIntro {
-    <p>This page is served directly from app/pages/index.web.</p>
+  @if ready && !false {
+    <p>The expression engine is running this page directly from app/pages/index.web.</p>
   } @else {
     <p>The intro is hidden.</p>
   }
 
   <h2>Posts</h2>
-  <PostPreview title="Pinned release notes" rank=1 featured=true />
+  <PostPreview title={"Pinned for " + name} rank={visits - 4} featured={boosted || ready} />
 
   @for post in posts {
-    <PostPreview title={post} />
+    <PostPreview title={post} featured={post == "One" || boosted} />
   }
 </main>

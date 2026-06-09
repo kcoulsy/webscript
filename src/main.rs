@@ -1,5 +1,7 @@
+mod debugbar;
 mod dev;
 mod diagnostic;
+mod expr;
 mod parser;
 mod project;
 mod render;

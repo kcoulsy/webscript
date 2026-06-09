@@ -61,19 +61,21 @@ The first supported language slice is intentionally small, but now includes temp
 ```web
 @page "/"
 
-@let name: string = "WebScript"
-@let showIntro: bool = true
+@let name = "WebScript"
+@let visits = 2 + 3
+@let greeting = "Hello " + name
 @let posts: string[] = ["One", "Two", "Three"]
 
 <main>
-  <h1>Hello {name}</h1>
+  <h1>{greeting}</h1>
+  <p>Visit count: {visits + 1}</p>
 
-  @if showIntro {
+  @if visits > 3 {
     <p>Direct .web serving is alive.</p>
   }
 
   @for post in posts {
-    <PostPreview title={post} />
+    <PostPreview title={post} featured={visits > 3} />
   }
 </main>
 ```
@@ -81,6 +83,5 @@ The first supported language slice is intentionally small, but now includes temp
 Run the sample:
 
 ```bash
-cd examples/hello
 cargo run --bin web -- serve
 ```

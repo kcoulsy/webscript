@@ -276,10 +276,6 @@ pub fn check_project(root: &Path) -> Result<Vec<FileDiagnostic>, String> {
     Ok(diagnostics)
 }
 
-pub fn load_components(root: &Path) -> Result<render::ComponentRegistry, FileDiagnostic> {
-    ProjectRuntime::new(root.to_path_buf()).load_components()
-}
-
 fn match_route(file: &parser::WebFile, request_path: &str) -> Option<Scope> {
     let route = file.route.as_ref()?;
     let pattern_segments: Vec<&str> = file
