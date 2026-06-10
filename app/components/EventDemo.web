@@ -13,27 +13,54 @@
 }
 
 <div class="event-demo">
-  <form @submit.prevent={|event| save()}>
-    <label>
-      Note (@change updates signal)
-      <input name="note" @change={|event| note = event.target.value} value={note} />
-    </label>
-    <button type="submit">Save (@submit.prevent)</button>
+  <form @submit.prevent={|event| save()} class="form-stack">
+    <UI.Label text="Note (@change updates signal)" target="event-note" />
+    <input
+      id="event-note"
+      class="ui-input"
+      name="note"
+      @change={|event| note = event.target.value}
+      value={note}
+    />
+    <button type="submit" class="ui-button" data-variant="default" data-size="default">Save (@submit.prevent)</button>
   </form>
 
   @if submitted {
-    <p class="success" style="color: #0a7a2f;">{status}</p>
+    <p class="event-success">{status}</p>
   }
 
-  <label>
-    Keyboard (@keydown increments counter; Enter saves)
-    <input
-      @keydown={|event| { keyCount = keyCount + 1; event.key == "Enter" && save() }}
-      @focus={|event| status = "focused"}
-      @blur={status = "blurred"}
-      placeholder="Type here — watch key count"
-    />
-  </label>
-  <p>Keys pressed: {keyCount}</p>
-  <p>Status: {status}</p>
+  <UI.Separator />
+
+  <UI.Label text="Keyboard (@keydown increments counter; Enter saves)" target="event-keys" />
+  <input
+    id="event-keys"
+    class="ui-input"
+    @keydown={|event| { keyCount = keyCount + 1; event.key == "Enter" && save() }}
+    @focus={|event| status = "focused"}
+    @blur={status = "blurred"}
+    placeholder="Type here — watch key count"
+  />
+  <p class="event-meta">Keys pressed: {keyCount}</p>
+  <p class="event-meta">Status: {status}</p>
 </div>
+
+@style {
+  .event-demo {
+    display: grid;
+    gap: 0.75rem;
+    max-width: 28rem;
+  }
+
+  .event-meta {
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--ui-muted-foreground);
+  }
+
+  .event-success {
+    margin: 0;
+    font-size: 0.875rem;
+    color: #0a7a2f;
+    font-weight: 500;
+  }
+}

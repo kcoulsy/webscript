@@ -32,13 +32,11 @@
   <h1>Todo app</h1>
   <p>A tiny database-backed todo list for the example app.</p>
 
-  <form method="post" action="/todos">
+  <form method="post" action="/todos" class="form-stack">
     <input type="hidden" name="_action" value="addTodo" />
-    <label>
-      New todo
-      <input name="title" placeholder="Ship something small" />
-    </label>
-    <button>Add todo</button>
+    <UI.Label text="New todo" target="todo-title" />
+    <UI.Input id="todo-title" name="title" placeholder="Ship something small" required=true />
+    <UI.Button label="Add todo" type="submit" />
   </form>
 
   @if todos.length > 0 {
@@ -48,17 +46,17 @@
       @for todo in todos {
         <TodoItem title={todo.title} done={todo.done} />
         @if !todo.done {
-          <form method="post" action="/todos">
+          <form method="post" action="/todos" class="button-row" style="margin: 0.5rem 0 1rem;">
             <input type="hidden" name="_action" value="completeTodo" />
             <input type="hidden" name="id" value={todo.id} />
-            <button>Mark done</button>
+            <UI.Button label="Mark done" type="submit" size="sm" variant="outline" />
           </form>
         }
       }
 
-      <form method="post" action="/todos">
+      <form method="post" action="/todos" class="button-row">
         <input type="hidden" name="_action" value="resetTodos" />
-        <button>Reset list</button>
+        <UI.Button label="Reset list" type="submit" variant="destructive" size="sm" />
       </form>
     </section>
   } @else {

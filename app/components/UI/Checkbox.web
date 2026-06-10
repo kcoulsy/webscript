@@ -6,14 +6,18 @@
 }
 
 <label class="ui-checkbox">
-  @if disabled && checked {
-    <input type="checkbox" name={name} checked disabled />
-  } @else if disabled {
-    <input type="checkbox" name={name} disabled />
-  } @else if checked {
-    <input type="checkbox" name={name} checked />
+  @if disabled {
+    @if checked {
+      <input type="checkbox" name={name} checked disabled />
+    } @else {
+      <input type="checkbox" name={name} disabled />
+    }
   } @else {
-    <input type="checkbox" name={name} />
+    @if checked {
+      <input type="checkbox" name={name} checked />
+    } @else {
+      <input type="checkbox" name={name} />
+    }
   }
   @if label != "" {
     <span>{label}</span>

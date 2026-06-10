@@ -7,7 +7,7 @@
 }
 
 <section class="details">
-  <button @click={open = !open}>
+  <button type="button" class="ui-button" data-variant="outline" data-size="sm" @click={open = !open}>
     @if open {
       Hide {title}
     } @else {
@@ -16,8 +16,17 @@
   </button>
 
   @if open {
-    <div class="details-panel" style="margin-top: 0.75rem; padding: 0.75rem 1rem; border: 1px solid #ccc; border-radius: 6px; background: #f8f8f8;">
-      <p><strong>{title}</strong> — content loaded on the server, toggled in the browser.</p>
+    <div class="details-panel">
+      <UI.Card
+        title={title}
+        content="Content loaded on the server, toggled in the browser."
+      />
     </div>
   }
 </section>
+
+@style {
+  .details-panel {
+    margin-top: 0.75rem;
+  }
+}

@@ -6,8 +6,26 @@
 
 <article class="post-preview">
   @if featured {
-    <strong>Featured</strong>
+    <UI.Badge text="Featured" />
   }
   <h3>{title}</h3>
   <p>Rank {rank}</p>
 </article>
+
+@style {
+  .post-preview {
+    padding: 1rem 0;
+    border-bottom: 1px solid var(--ui-border);
+  }
+
+  .post-preview h3 {
+    margin: 0.5rem 0 0.25rem;
+    font-size: 1rem;
+  }
+
+  .post-preview p {
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--ui-muted-foreground);
+  }
+}

@@ -7,9 +7,26 @@
 }
 
 <div class="greeting">
-  <label>
-    Name
-    <input @input={|event| name = event.target.value} value={name} placeholder={placeholder} />
-  </label>
-  <p>Hello, {name}!</p>
+  <UI.Label text="Name" target="greeting-name" />
+  <input
+    id="greeting-name"
+    class="ui-input"
+    @input={|event| name = event.target.value}
+    value={name}
+    placeholder={placeholder}
+  />
+  <p class="greeting-output">Hello, {name}!</p>
 </div>
+
+@style {
+  .greeting {
+    display: grid;
+    gap: 0.5rem;
+    max-width: 20rem;
+  }
+
+  .greeting-output {
+    margin: 0.25rem 0 0;
+    font-size: 0.9375rem;
+  }
+}

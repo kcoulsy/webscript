@@ -63,19 +63,23 @@
 
   <p>@do promo: {promo}</p>
 
-  <form method="post" action="/">
+  <form method="post" action="/" class="form-stack">
     <input type="hidden" name="_action" value="increment" />
-    <button>Increment session</button>
+    <UI.Button label="Increment session" type="submit" />
   </form>
-  <form method="post" action="/">
+
+  <form method="post" action="/" class="form-stack">
     <input type="hidden" name="_action" value="rememberName" />
-    <input name="name" value={session.name} />
-    <button>Remember name</button>
+    <UI.Label text="Name" target="home-name" />
+    <UI.Input id="home-name" name="name" value={session.name} />
+    <UI.Button label="Remember name" type="submit" />
   </form>
-  <form method="post" action="/">
+
+  <form method="post" action="/" class="form-stack">
     <input type="hidden" name="_action" value="validateWithWhile" />
-    <input name="name" value={session.name} />
-    <button>Remember with while validation</button>
+    <UI.Label text="Name" target="home-name-while" />
+    <UI.Input id="home-name-while" name="name" value={session.name} />
+    <UI.Button label="Remember with while validation" type="submit" variant="secondary" />
   </form>
 
   @if ready && !false {

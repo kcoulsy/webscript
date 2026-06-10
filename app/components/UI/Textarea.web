@@ -15,21 +15,23 @@
     placeholder={placeholder}
     disabled
   >{value}</textarea>
-} @else if required {
-  <textarea
-    class="ui-textarea"
-    name={name}
-    rows={rows}
-    placeholder={placeholder}
-    required
-  >{value}</textarea>
 } @else {
-  <textarea
-    class="ui-textarea"
-    name={name}
-    rows={rows}
-    placeholder={placeholder}
-  >{value}</textarea>
+  @if required {
+    <textarea
+      class="ui-textarea"
+      name={name}
+      rows={rows}
+      placeholder={placeholder}
+      required
+    >{value}</textarea>
+  } @else {
+    <textarea
+      class="ui-textarea"
+      name={name}
+      rows={rows}
+      placeholder={placeholder}
+    >{value}</textarea>
+  }
 }
 
 @style {
