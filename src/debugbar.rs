@@ -4,6 +4,7 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskKind {
     Model,
+    Db,
     Sleep,
     Fetch,
     Timeout,
@@ -15,6 +16,7 @@ impl TaskKind {
     fn css_class(self) -> &'static str {
         match self {
             Self::Model => "ws-debugbar-task-model",
+            Self::Db => "ws-debugbar-task-db",
             Self::Sleep => "ws-debugbar-task-sleep",
             Self::Fetch => "ws-debugbar-task-fetch",
             Self::Timeout => "ws-debugbar-task-timeout",
@@ -321,6 +323,7 @@ pub fn render_html(metrics: &RequestMetrics) -> String {
   box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
 }}
 .ws-debugbar-task-model {{ background: linear-gradient(180deg, #669df6, #4c7fe6); }}
+.ws-debugbar-task-db {{ background: linear-gradient(180deg, #3db9a8, #2a9d8f); }}
 .ws-debugbar-task-sleep {{ background: linear-gradient(180deg, #c58af9, #a855f7); }}
 .ws-debugbar-task-fetch {{ background: linear-gradient(180deg, #5bb974, #3d9e50); }}
 .ws-debugbar-task-timeout {{ background: linear-gradient(180deg, #f5a742, #e37400); }}
@@ -403,6 +406,7 @@ fn render_gantt(tasks: &[AsyncTaskSpan], total_ms: u64) -> String {
                 task.label,
                 task.duration_ms
             ));
+            let display_label = html_escape(&truncate_gantt_label(&task.label, 80));
             format!(
                 r#"<div class="ws-debugbar-gantt-row">
   <div class="ws-debugbar-gantt-label" title="{title}">{label}</div>
@@ -411,7 +415,7 @@ fn render_gantt(tasks: &[AsyncTaskSpan], total_ms: u64) -> String {
   </div>
 </div>"#,
                 title = title,
-                label = html_escape(&task.label),
+                label = display_label,
                 class = task.kind.css_class(),
                 left = left,
                 width = width.max(0.4)
@@ -464,6 +468,14 @@ fn html_escape(value: &str) -> String {
         .replace('"', "&quot;")
 }
 
+fn truncate_gantt_label(value: &str, max_len: usize) -> String {
+    if value.chars().count() <= max_len {
+        return value.to_string();
+    }
+    let truncated: String = value.chars().take(max_len.saturating_sub(1)).collect();
+    format!("{truncated}…")
+}
+
 #[cfg(test)]
 mod tests {
     use super::{render_gantt, render_html, AsyncTaskSpan, RequestMetrics, TaskKind, TaskTrace};
@@ -512,6 +524,12 @@ mod tests {
                 duration_ms: 8,
             },
             AsyncTaskSpan {
+                label: "db.query(\"SELECT * FROM Todo\")".to_string(),
+                kind: TaskKind::Db,
+                start_ms: 3,
+                duration_ms: 6,
+            },
+            AsyncTaskSpan {
                 label: "await Todo.all".to_string(),
                 kind: TaskKind::Await,
                 start_ms: 1,
@@ -523,7 +541,9 @@ mod tests {
 
         assert!(html.contains("Async timeline"));
         assert!(html.contains("Todo.all"));
+        assert!(html.contains("db.query"));
         assert!(html.contains("ws-debugbar-task-model"));
+        assert!(html.contains("ws-debugbar-task-db"));
         assert!(html.contains("ws-debugbar-task-await"));
     }
 

@@ -1,8 +1,11 @@
-use crate::db::{discover_models, ModelDecl, ModelField, SQLITE_PATH};
+use crate::db::{
+    coerce_bool, coerce_float, coerce_int, discover_models, open_database, quote_ident, ModelDecl,
+    ModelField,
+};
 use crate::parser::Value;
 use rusqlite::{params_from_iter, Connection, Row};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 pub struct ModelRuntime {
@@ -97,17 +100,6 @@ impl ModelRuntime {
             other => Err(format!("unknown method `{model_name}.{other}`")),
         }
     }
-}
-
-fn open_database(root: &Path) -> Result<Connection, String> {
-    let database_path = root.join(SQLITE_PATH);
-    if !database_path.exists() {
-        return Err(format!(
-            "database not found at `{}`; run `web db:migrate` first",
-            database_path.display()
-        ));
-    }
-    Connection::open(&database_path).map_err(|error| error.to_string())
 }
 
 fn insert_row(
@@ -231,9 +223,7 @@ fn read_field(row: &Row<'_>, field: &ModelField) -> rusqlite::Result<Value> {
     match field.type_name.as_str() {
         "int" => Ok(Value::Int(row.get(index)?)),
         "bool" => Ok(Value::Bool(row.get::<_, i64>(index)? != 0)),
-        "float" => Ok(Value::Int(
-            row.get::<_, f64>(index)?.round() as i64,
-        )),
+        "float" => Ok(Value::Int(row.get::<_, f64>(index)?.round() as i64)),
         "bytes" => {
             let bytes: Vec<u8> = row.get(index)?;
             Ok(Value::String(String::from_utf8_lossy(&bytes).to_string()))
@@ -263,39 +253,6 @@ fn sql_value(value: &Value, field: &ModelField) -> Result<rusqlite::types::Value
     }
 }
 
-fn coerce_int(value: &Value) -> Result<i64, String> {
-    match value {
-        Value::Int(value) => Ok(*value),
-        Value::String(text) => text
-            .parse()
-            .map_err(|_| format!("expected int, found string `{text}`")),
-        other => Err(format!("expected int, found `{}`", other.type_name())),
-    }
-}
-
-fn coerce_bool(value: &Value) -> Result<bool, String> {
-    match value {
-        Value::Bool(value) => Ok(*value),
-        Value::Int(value) => Ok(*value != 0),
-        Value::String(text) => match text.as_str() {
-            "true" | "1" => Ok(true),
-            "false" | "0" => Ok(false),
-            other => Err(format!("expected bool, found string `{other}`")),
-        },
-        other => Err(format!("expected bool, found `{}`", other.type_name())),
-    }
-}
-
-fn coerce_float(value: &Value) -> Result<f64, String> {
-    match value {
-        Value::Int(value) => Ok(*value as f64),
-        Value::String(text) => text
-            .parse()
-            .map_err(|_| format!("expected float, found string `{text}`")),
-        other => Err(format!("expected float, found `{}`", other.type_name())),
-    }
-}
-
 fn expect_int(args: &[Value], index: usize, name: &str) -> Result<i64, String> {
     let value = args
         .get(index)
@@ -322,10 +279,6 @@ fn expect_object<'a>(
 
 fn empty_object() -> Value {
     Value::Object(BTreeMap::new())
-}
-
-fn quote_ident(value: &str) -> String {
-    format!("\"{}\"", value.replace('"', "\"\""))
 }
 
 #[cfg(test)]

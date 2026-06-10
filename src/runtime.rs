@@ -1,6 +1,7 @@
 use crate::debugbar::{TaskKind, TaskTrace};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
+use crate::db_runtime::DbRuntime;
 use crate::model_runtime::ModelRuntime;
 use crate::parser::Value;
 use crate::stmt::{self, error_value, AssignTarget, BlockOutcome, Statement, StmtResult, WebError};
@@ -25,6 +26,7 @@ pub struct WebRuntime {
     client: Client,
     promises: Arc<AsyncMutex<BTreeMap<u64, BoxFuture>>>,
     models: Option<Arc<ModelRuntime>>,
+    db: Option<Arc<DbRuntime>>,
     trace: Option<Arc<Mutex<TaskTrace>>>,
     promise_labels: Arc<Mutex<BTreeMap<u64, String>>>,
 }
@@ -35,6 +37,7 @@ impl WebRuntime {
             client: Client::new(),
             promises: Arc::new(AsyncMutex::new(BTreeMap::new())),
             models: None,
+            db: None,
             trace: None,
             promise_labels: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -44,7 +47,8 @@ impl WebRuntime {
         Ok(Self {
             client: Client::new(),
             promises: Arc::new(AsyncMutex::new(BTreeMap::new())),
-            models: Some(ModelRuntime::new(root)?),
+            models: Some(ModelRuntime::new(root.clone())?),
+            db: Some(DbRuntime::new(root)),
             trace: None,
             promise_labels: Arc::new(Mutex::new(BTreeMap::new())),
         })
@@ -55,6 +59,7 @@ impl WebRuntime {
             client: self.client.clone(),
             promises: Arc::clone(&self.promises),
             models: self.models.clone(),
+            db: self.db.clone(),
             trace: Some(trace),
             promise_labels: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -413,6 +418,29 @@ impl WebRuntime {
         for arg in args {
             evaluated_args
                 .push(Box::pin(self.evaluate_expr_inner(arg, scope, session, line, column)).await?);
+        }
+
+        if let Some(method) = db_callee_name(callee) {
+            let Some(db) = self.db.clone() else {
+                return Err(Diagnostic::error(
+                    Span::at(line, column),
+                    format!("database helper `db.{method}` requires a project database"),
+                    None,
+                )
+                .into());
+            };
+            let label = db_task_label(&method, &evaluated_args);
+            let id = self
+                .insert_future(
+                    label,
+                    TaskKind::Db,
+                    async move {
+                        db.call(&method, &evaluated_args)
+                            .map_err(|error| WebError { message: error })
+                    },
+                )
+                .await;
+            return Ok(Value::Promise { id });
         }
 
         if let Some((model, method)) = model_callee_name(callee) {
@@ -778,9 +806,33 @@ fn simple_callee_name(expr: &expr::Expr) -> Option<String> {
     }
 }
 
+fn db_callee_name(expr: &expr::Expr) -> Option<String> {
+    match expr {
+        expr::Expr::Path(path)
+            if path.len() == 2 && path[0] == "db" && matches!(path[1].as_str(), "query" | "execute") =>
+        {
+            Some(path[1].clone())
+        }
+        _ => None,
+    }
+}
+
+fn db_task_label(method: &str, args: &[Value]) -> String {
+    let sql = args
+        .first()
+        .and_then(|value| match value {
+            Value::String(text) => Some(text.as_str()),
+            _ => None,
+        })
+        .unwrap_or("");
+    format!("db.{method}(\"{sql}\")")
+}
+
 fn model_callee_name(expr: &expr::Expr) -> Option<(String, String)> {
     match expr {
-        expr::Expr::Path(path) if path.len() == 2 => Some((path[0].clone(), path[1].clone())),
+        expr::Expr::Path(path) if path.len() == 2 && path[0] != "db" => {
+            Some((path[0].clone(), path[1].clone()))
+        }
         _ => None,
     }
 }
@@ -896,5 +948,46 @@ mod tests {
             .await
             .expect("sleep");
         assert!(matches!(value, Value::Object(_)));
+    }
+
+    #[tokio::test]
+    async fn db_query_resolves() {
+        use crate::db;
+        use std::fs;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!("webscript-runtime-db-{nanos}"));
+        fs::create_dir_all(root.join("app/models")).expect("models dir");
+        fs::write(
+            root.join("app/models/Todo.web"),
+            "@model Todo {\n  id: int @primary @auto\n  title: string\n  done: bool @default(false)\n  createdAt: datetime @default(now)\n}\n",
+        )
+        .expect("write model");
+        db::generate(&root, Some("schema")).expect("generate");
+        db::migrate(&root).expect("migrate");
+
+        let runtime = WebRuntime::with_database(root.clone()).expect("runtime");
+        let expression =
+            expr::parse("await db.query(\"SELECT 1 AS n\")", 1, 1).expect("parse");
+        let scope = Env::new();
+        let session = BTreeMap::new();
+        let value = runtime
+            .evaluate_expr(&expression, &scope, &session, 1, 1)
+            .await
+            .expect("db query");
+        let Value::Array { values, .. } = value else {
+            panic!("expected array");
+        };
+        assert_eq!(values.len(), 1);
+        let Value::Object(fields) = &values[0] else {
+            panic!("expected object row");
+        };
+        assert_eq!(fields.get("n"), Some(&Value::Int(1)));
+
+        let _ = fs::remove_dir_all(root);
     }
 }

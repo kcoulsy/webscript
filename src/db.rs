@@ -1,4 +1,5 @@
 use crate::diagnostic::{Diagnostic, FileDiagnostic, Span};
+use crate::parser::Value;
 use rusqlite::{params, Connection};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -764,7 +765,7 @@ fn is_supported_type(type_name: &str) -> bool {
     )
 }
 
-fn quote_ident(value: &str) -> String {
+pub fn quote_ident(value: &str) -> String {
     format!("\"{}\"", value.replace('"', "\"\""))
 }
 
@@ -835,6 +836,59 @@ fn checksum(source: &str) -> String {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     format!("{hash:016x}")
+}
+
+pub fn open_database(root: &Path) -> Result<Connection, String> {
+    let database_path = root.join(SQLITE_PATH);
+    if !database_path.exists() {
+        return Err(format!(
+            "database not found at `{}`; run `web db:migrate` first",
+            database_path.display()
+        ));
+    }
+    Connection::open(&database_path).map_err(|error| error.to_string())
+}
+
+pub fn coerce_int(value: &Value) -> Result<i64, String> {
+    match value {
+        Value::Int(value) => Ok(*value),
+        Value::String(text) => text
+            .parse()
+            .map_err(|_| format!("expected int, found string `{text}`")),
+        other => Err(format!("expected int, found `{}`", other.type_name())),
+    }
+}
+
+pub fn coerce_bool(value: &Value) -> Result<bool, String> {
+    match value {
+        Value::Bool(value) => Ok(*value),
+        Value::Int(value) => Ok(*value != 0),
+        Value::String(text) => match text.as_str() {
+            "true" | "1" => Ok(true),
+            "false" | "0" => Ok(false),
+            other => Err(format!("expected bool, found string `{other}`")),
+        },
+        other => Err(format!("expected bool, found `{}`", other.type_name())),
+    }
+}
+
+pub fn coerce_float(value: &Value) -> Result<f64, String> {
+    match value {
+        Value::Int(value) => Ok(*value as f64),
+        Value::String(text) => text
+            .parse()
+            .map_err(|_| format!("expected float, found string `{text}`")),
+        other => Err(format!("expected float, found `{}`", other.type_name())),
+    }
+}
+
+pub fn value_to_sql(value: &Value) -> Result<rusqlite::types::Value, String> {
+    match value {
+        Value::Int(value) => Ok(rusqlite::types::Value::Integer(*value)),
+        Value::Bool(value) => Ok(rusqlite::types::Value::Integer(if *value { 1 } else { 0 })),
+        Value::String(text) => Ok(rusqlite::types::Value::Text(text.clone())),
+        other => Ok(rusqlite::types::Value::Text(other.render())),
+    }
 }
 
 fn io_error(error: std::io::Error) -> ModelLoadError {
