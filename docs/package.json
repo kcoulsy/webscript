@@ -25,6 +25,8 @@
     "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@types/prismjs": "^1.26.5",
+    "prismjs": "^1.30.0",
     "@docusaurus/module-type-aliases": "3.10.1",
     "@docusaurus/tsconfig": "3.10.1",
     "@docusaurus/types": "3.10.1",
