@@ -1,5 +1,6 @@
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
+use crate::model_runtime::ModelRuntime;
 use crate::parser::Value;
 use crate::stmt::{self, error_value, AssignTarget, BlockOutcome, Statement, StmtResult, WebError};
 use async_recursion::async_recursion;
@@ -22,6 +23,7 @@ type BoxFuture = Pin<Box<dyn Future<Output = Result<Value, WebError>> + Send>>;
 pub struct WebRuntime {
     client: Client,
     promises: Arc<Mutex<BTreeMap<u64, BoxFuture>>>,
+    models: Option<Arc<ModelRuntime>>,
 }
 
 impl WebRuntime {
@@ -29,7 +31,16 @@ impl WebRuntime {
         Self {
             client: Client::new(),
             promises: Arc::new(Mutex::new(BTreeMap::new())),
+            models: None,
         }
+    }
+
+    pub fn with_database(root: std::path::PathBuf) -> Result<Self, String> {
+        Ok(Self {
+            client: Client::new(),
+            promises: Arc::new(Mutex::new(BTreeMap::new())),
+            models: Some(ModelRuntime::new(root)?),
+        })
     }
 
     pub async fn execute_block_async(
@@ -283,7 +294,19 @@ impl WebRuntime {
                     target.clone(),
                 )))
             }
-            Statement::ExprStmt { .. } => Ok(ExecuteResult::Continue),
+            Statement::ExprStmt {
+                expr,
+                line,
+                column,
+            } => {
+                match self
+                    .evaluate_statement_expr(expr, scope, session, *line, *column, inside_try)
+                    .await?
+                {
+                    Ok(_) => Ok(ExecuteResult::Continue),
+                    Err(error) => Ok(ExecuteResult::Thrown(error)),
+                }
+            }
         }
     }
 
@@ -369,6 +392,31 @@ impl WebRuntime {
         line: usize,
         column: usize,
     ) -> Result<Value, EvalError> {
+        let mut evaluated_args = Vec::with_capacity(args.len());
+        for arg in args {
+            evaluated_args
+                .push(Box::pin(self.evaluate_expr_inner(arg, scope, session, line, column)).await?);
+        }
+
+        if let Some((model, method)) = model_callee_name(callee) {
+            let Some(models) = self.models.clone() else {
+                return Err(Diagnostic::error(
+                    Span::at(line, column),
+                    format!("database model `{model}.{method}` requires a project database"),
+                    None,
+                )
+                .into());
+            };
+            let id = self
+                .insert_future(async move {
+                    models
+                        .call(&model, &method, &evaluated_args)
+                        .map_err(|error| WebError { message: error })
+                })
+                .await;
+            return Ok(Value::Promise { id });
+        }
+
         let Some(name) = simple_callee_name(callee) else {
             return Err(Diagnostic::error(
                 Span::at(line, column),
@@ -377,12 +425,6 @@ impl WebRuntime {
             )
             .into());
         };
-
-        let mut evaluated_args = Vec::with_capacity(args.len());
-        for arg in args {
-            evaluated_args
-                .push(Box::pin(self.evaluate_expr_inner(arg, scope, session, line, column)).await?);
-        }
 
         if let Some(Value::Function { params, body, .. }) = scope.get(&name).cloned() {
             if params.len() != evaluated_args.len() {
@@ -629,6 +671,13 @@ enum ExecuteResult {
 fn simple_callee_name(expr: &expr::Expr) -> Option<String> {
     match expr {
         expr::Expr::Path(path) if path.len() == 1 => Some(path[0].clone()),
+        _ => None,
+    }
+}
+
+fn model_callee_name(expr: &expr::Expr) -> Option<(String, String)> {
+    match expr {
+        expr::Expr::Path(path) if path.len() == 2 => Some((path[0].clone(), path[1].clone())),
         _ => None,
     }
 }

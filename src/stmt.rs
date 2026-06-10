@@ -272,6 +272,22 @@ fn parse_statement(
         });
     }
 
+    if mode == BlockMode::AsyncCapable {
+        let column = raw_line
+            .char_indices()
+            .find(|(_, ch)| !ch.is_whitespace())
+            .map(|(index, _)| index + 1)
+            .unwrap_or(1);
+        if let Ok(expr) = expr::parse(trimmed, line_number, column) {
+            *cursor += 1;
+            return Ok(Statement::ExprStmt {
+                expr,
+                line: line_number,
+                column,
+            });
+        }
+    }
+
     *cursor += 1;
     Err(parse_diagnostic_line(
         line_number,
@@ -899,6 +915,13 @@ mod tests {
         let stmts =
             parse_block("try {\n  throw(\"boom\")\n} catch err {\n  result = err.message\n}");
         assert!(matches!(stmts[0], Statement::Try { .. }));
+    }
+
+    #[test]
+    fn parses_await_expression_statement() {
+        let stmts = parse_block("await Todo.create(input)");
+        assert_eq!(stmts.len(), 1);
+        assert!(matches!(stmts[0], Statement::ExprStmt { .. }));
     }
 
     #[test]

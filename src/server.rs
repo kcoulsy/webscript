@@ -30,7 +30,7 @@ pub async fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String>
     let listener = TcpListener::bind(&address).map_err(|error| error.to_string())?;
     println!("WebScript dev server listening on http://{address}");
     let project_runtime = Arc::new(Mutex::new(project::ProjectRuntime::new(root.clone())));
-    let web_runtime = Arc::new(WebRuntime::new());
+    let web_runtime = Arc::new(WebRuntime::with_database(root.clone())?);
     let sessions = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     let dev_server = dev::DevServer::start(root.clone());
     let runtime_handle = Handle::current();
@@ -420,21 +420,6 @@ fn load_session(
         "name".to_string(),
         crate::parser::Value::String(String::new()),
     );
-    session.insert(
-        "todo1".to_string(),
-        crate::parser::Value::String(String::new()),
-    );
-    session.insert(
-        "todo2".to_string(),
-        crate::parser::Value::String(String::new()),
-    );
-    session.insert(
-        "todo3".to_string(),
-        crate::parser::Value::String(String::new()),
-    );
-    session.insert("todoDone1".to_string(), crate::parser::Value::Bool(false));
-    session.insert("todoDone2".to_string(), crate::parser::Value::Bool(false));
-    session.insert("todoDone3".to_string(), crate::parser::Value::Bool(false));
     sessions.insert(session_id.clone(), session.clone());
     Ok((session_id, session, true))
 }

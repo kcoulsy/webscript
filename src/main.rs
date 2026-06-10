@@ -1,4 +1,5 @@
 mod db;
+mod model_runtime;
 mod debugbar;
 mod dev;
 mod diagnostic;

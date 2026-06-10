@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const SCHEMA_SNAPSHOT_PATH: &str = "db/schema.sql";
 const MIGRATIONS_PATH: &str = "db/migrations";
-const SQLITE_PATH: &str = ".web/data.sqlite";
+pub const SQLITE_PATH: &str = ".web/data.sqlite";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ModelDecl {

@@ -166,12 +166,6 @@ fn default_session_value() -> Value {
     let mut fields = BTreeMap::new();
     fields.insert("count".to_string(), Value::Int(0));
     fields.insert("name".to_string(), Value::String(String::new()));
-    fields.insert("todo1".to_string(), Value::String(String::new()));
-    fields.insert("todo2".to_string(), Value::String(String::new()));
-    fields.insert("todo3".to_string(), Value::String(String::new()));
-    fields.insert("todoDone1".to_string(), Value::Bool(false));
-    fields.insert("todoDone2".to_string(), Value::Bool(false));
-    fields.insert("todoDone3".to_string(), Value::Bool(false));
     Value::Object(fields)
 }
 

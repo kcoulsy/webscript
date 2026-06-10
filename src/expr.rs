@@ -222,6 +222,7 @@ fn evaluate_path(
 
     for field in &path[1..] {
         value = match value {
+            Value::Array { values, .. } if field == "length" => Value::Int(values.len() as i64),
             Value::Object(fields) => {
                 let Some(field_value) = fields.get(field).cloned() else {
                     return Err(Diagnostic::error(

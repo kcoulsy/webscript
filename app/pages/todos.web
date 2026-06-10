@@ -1,106 +1,54 @@
 @page "/todos"
 
-@let hasTodos = session.todo1 != "" || session.todo2 != "" || session.todo3 != ""
-@let listFull = session.todo1 != "" && session.todo2 != "" && session.todo3 != ""
+@load {
+  todos: Todo[] = await Todo.all()
+}
 
 @action addTodo {
   if input.title == "" {
     fail("Write a todo before adding it.")
   }
-  if session.todo1 == "" {
-    session.todo1 = input.title
-    session.todoDone1 = false
-    redirect("/todos")
-  }
-  if session.todo2 == "" {
-    session.todo2 = input.title
-    session.todoDone2 = false
-    redirect("/todos")
-  }
-  if session.todo3 == "" {
-    session.todo3 = input.title
-    session.todoDone3 = false
-    redirect("/todos")
-  }
-  fail("This tiny demo list is full. Reset it to add more todos.")
+  await Todo.create(input)
+  redirect("/todos")
 }
 
 @action completeTodo {
-  if input.slot == "1" {
-    session.todoDone1 = true
-    redirect("/todos")
+  if input.id == "" {
+    fail("Unknown todo.")
   }
-  if input.slot == "2" {
-    session.todoDone2 = true
-    redirect("/todos")
-  }
-  if input.slot == "3" {
-    session.todoDone3 = true
-    redirect("/todos")
-  }
-  fail("Unknown todo.")
+  await Todo.update(input.id, { done: true })
+  redirect("/todos")
 }
 
 @action resetTodos {
-  session.todo1 = ""
-  session.todo2 = ""
-  session.todo3 = ""
-  session.todoDone1 = false
-  session.todoDone2 = false
-  session.todoDone3 = false
+  await Todo.deleteAll()
   redirect("/todos")
 }
 
 <main>
   <h1>Todo app</h1>
-  <p>A tiny session-backed todo list for the example app.</p>
+  <p>A tiny database-backed todo list for the example app.</p>
 
-  @if listFull {
-    <p>The demo list is full. Reset it to add more.</p>
-  } @else {
-    <form method="post" action="/todos">
-      <input type="hidden" name="_action" value="addTodo" />
-      <label>
-        New todo
-        <input name="title" placeholder="Ship something small" />
-      </label>
-      <button>Add todo</button>
-    </form>
-  }
+  <form method="post" action="/todos">
+    <input type="hidden" name="_action" value="addTodo" />
+    <label>
+      New todo
+      <input name="title" placeholder="Ship something small" />
+    </label>
+    <button>Add todo</button>
+  </form>
 
-  @if hasTodos {
+  @if todos.length > 0 {
     <section>
       <h2>Todos</h2>
 
-      @if session.todo1 != "" {
-        <TodoItem title={session.todo1} done={session.todoDone1} />
-        @if !session.todoDone1 {
+      @for todo in todos {
+        <TodoItem title={todo.title} done={todo.done} />
+        @if !todo.done {
           <form method="post" action="/todos">
             <input type="hidden" name="_action" value="completeTodo" />
-            <input type="hidden" name="slot" value="1" />
-            <button>Mark first done</button>
-          </form>
-        }
-      }
-
-      @if session.todo2 != "" {
-        <TodoItem title={session.todo2} done={session.todoDone2} />
-        @if !session.todoDone2 {
-          <form method="post" action="/todos">
-            <input type="hidden" name="_action" value="completeTodo" />
-            <input type="hidden" name="slot" value="2" />
-            <button>Mark second done</button>
-          </form>
-        }
-      }
-
-      @if session.todo3 != "" {
-        <TodoItem title={session.todo3} done={session.todoDone3} />
-        @if !session.todoDone3 {
-          <form method="post" action="/todos">
-            <input type="hidden" name="_action" value="completeTodo" />
-            <input type="hidden" name="slot" value="3" />
-            <button>Mark third done</button>
+            <input type="hidden" name="id" value={todo.id} />
+            <button>Mark done</button>
           </form>
         }
       }
