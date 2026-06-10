@@ -1,3 +1,8 @@
+---
+sidebar_position: 5
+title: Directives
+---
+
 # Directive Reference
 
 Directives start with `@` and define routes, data, markup logic, runtime behavior, and configuration.

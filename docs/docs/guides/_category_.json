@@ -1,0 +1,10 @@
+{
+  "label": "Guides",
+  "position": 5,
+  "link": {
+    "type": "generated-index",
+    "slug": "/guides",
+    "title": "Guides",
+    "description": "In-depth guides for routing, components, auth, deployment, and other framework topics."
+  }
+}

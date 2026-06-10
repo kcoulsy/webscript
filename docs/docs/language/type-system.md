@@ -1,3 +1,7 @@
+---
+sidebar_position: 3
+---
+
 # Type System
 
 WebScript is typed at route boundaries, data loading boundaries, action inputs, component props, auth/session context, and response values.

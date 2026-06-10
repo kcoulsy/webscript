@@ -5,7 +5,9 @@ mod expr;
 mod parser;
 mod project;
 mod render;
+mod runtime;
 mod server;
+mod stmt;
 
 use std::env;
 use std::path::Path;
@@ -61,7 +63,8 @@ fn run() -> Result<(), String> {
         "serve" => {
             let root = env::current_dir().map_err(|error| error.to_string())?;
             let options = ServeOptions::from_args(args.collect())?;
-            server::serve(root, options.host, options.port)
+            let runtime = tokio::runtime::Runtime::new().map_err(|error| error.to_string())?;
+            runtime.block_on(server::serve(root, options.host, options.port))
         }
         "help" | "--help" | "-h" => {
             print_help();

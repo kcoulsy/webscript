@@ -1,3 +1,7 @@
+---
+sidebar_position: 4
+---
+
 # HTML Templates
 
 WebScript templates are HTML-first. Markup is written directly in `.web` files and can contain components, expressions, directives, and scoped logic.

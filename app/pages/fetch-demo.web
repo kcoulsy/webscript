@@ -1,0 +1,27 @@
+@page "/fetch-demo"
+
+@load {
+  status: int = 0
+  error: string = ""
+
+  try {
+    response := await fetch("https://httpbin.org/status/404")
+    if !response.ok {
+      throw("upstream returned " + response.status)
+    }
+    status = response.status
+  } catch err {
+    error = err.message
+  }
+}
+
+<main>
+  <h1>Fetch demo</h1>
+  <p>Demonstrates <code>fetch</code>, <code>throw</code>, and <code>try/catch</code>.</p>
+  <p>Status: {status}</p>
+  <p>Error: {error}</p>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/async-demo">Async demo</a>
+  </nav>
+</main>

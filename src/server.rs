@@ -3,6 +3,7 @@ use crate::dev;
 use crate::diagnostic::{self, FileDiagnostic};
 use crate::project;
 use crate::render;
+use crate::runtime::WebRuntime;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -10,10 +11,11 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use tokio::runtime::Handle;
 
 type SessionStore = Arc<Mutex<std::collections::BTreeMap<String, render::Scope>>>;
 
-pub fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String> {
+pub async fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String> {
     match project::check_project(&root) {
         Ok(diagnostics) if !diagnostics.is_empty() => {
             eprintln!("Type check errors found (server will still start):");
@@ -27,21 +29,31 @@ pub fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String> {
     let address = format!("{host}:{port}");
     let listener = TcpListener::bind(&address).map_err(|error| error.to_string())?;
     println!("WebScript dev server listening on http://{address}");
-    let runtime = Arc::new(Mutex::new(project::ProjectRuntime::new(root.clone())));
+    let project_runtime = Arc::new(Mutex::new(project::ProjectRuntime::new(root.clone())));
+    let web_runtime = Arc::new(WebRuntime::new());
     let sessions = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     let dev_server = dev::DevServer::start(root.clone());
+    let runtime_handle = Handle::current();
 
     for stream in listener.incoming() {
         match stream {
             Ok(stream) => {
                 let root = root.clone();
-                let runtime = Arc::clone(&runtime);
+                let project_runtime = Arc::clone(&project_runtime);
+                let web_runtime = Arc::clone(&web_runtime);
                 let sessions = Arc::clone(&sessions);
                 let dev_server = dev_server.clone();
+                let runtime_handle = runtime_handle.clone();
                 thread::spawn(move || {
-                    if let Err(diagnostic) =
-                        handle_connection(&root, &runtime, &sessions, &dev_server, stream)
-                    {
+                    if let Err(diagnostic) = handle_connection(
+                        &root,
+                        &project_runtime,
+                        &web_runtime,
+                        &sessions,
+                        &dev_server,
+                        &runtime_handle,
+                        stream,
+                    ) {
                         diagnostic.report_stderr();
                     }
                 });
@@ -55,9 +67,11 @@ pub fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String> {
 
 fn handle_connection(
     root: &Path,
-    runtime: &Arc<Mutex<project::ProjectRuntime>>,
+    project_runtime: &Arc<Mutex<project::ProjectRuntime>>,
+    web_runtime: &Arc<WebRuntime>,
     sessions: &SessionStore,
     dev_server: &dev::DevServer,
+    runtime_handle: &Handle,
     mut stream: TcpStream,
 ) -> Result<(), FileDiagnostic> {
     let request = read_request(&mut stream).map_err(io_diagnostic)?;
@@ -105,12 +119,12 @@ fn handle_connection(
     let started = Instant::now();
     let mut metrics = RequestMetrics::new(path);
 
-    let mut runtime = runtime
+    let mut project_runtime = project_runtime
         .lock()
         .map_err(|_| io_diagnostic("project runtime lock poisoned".to_string()))?;
 
     let route_started = Instant::now();
-    let (route_file, source, parsed, params) = match runtime.load_route_with_source(path) {
+    let (route_file, source, parsed, params) = match project_runtime.load_route_with_source(path) {
         Ok(Some(value)) => value,
         Ok(None) => {
             write_response(&mut stream, 404, "text/plain", "Not Found")
@@ -127,7 +141,7 @@ fn handle_connection(
     metrics.route_file = Some(route_file.clone());
 
     let components_started = Instant::now();
-    let components = match runtime.load_components() {
+    let components = match project_runtime.load_components() {
         Ok(components) => components,
         Err(diagnostic) => {
             metrics.push("Components", components_started.elapsed(), None);
@@ -148,7 +162,15 @@ fn handle_connection(
             .map(|value| value.render())
             .or_else(|| query_value(query, "_action"))
             .ok_or_else(|| io_diagnostic("POST requests require `_action`".to_string()))?;
-        match render::execute_action(&parsed, &action_name, &params, &input, &mut session) {
+        let action_result = runtime_handle.block_on(render::execute_action(
+            &parsed,
+            &action_name,
+            &params,
+            &input,
+            &mut session,
+            web_runtime,
+        ));
+        match action_result {
             Ok(render::ActionOutcome::Redirect(target)) => {
                 save_session(sessions, &session_id, session).map_err(io_diagnostic)?;
                 write_redirect(
@@ -185,7 +207,13 @@ fn handle_connection(
     let render_started = Instant::now();
     let mut render_params = params.clone();
     render_params.insert("session".to_string(), crate::parser::Value::Object(session));
-    match render::render_with_components(&parsed, &render_params, &components) {
+    let render_result = runtime_handle.block_on(render::render_with_components_async(
+        &parsed,
+        &render_params,
+        &components,
+        web_runtime,
+    ));
+    match render_result {
         Ok(html) => {
             metrics.push("Render", render_started.elapsed(), None);
             metrics.set_total(started.elapsed());

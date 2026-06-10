@@ -1,3 +1,7 @@
+---
+sidebar_position: 2
+---
+
 # Control Flow
 
 WebScript supports control flow in server logic and directly inside markup.
@@ -73,6 +77,21 @@ Use `@let` for a single synchronous local value:
 ```
 
 `@let` should not await promises. Use `@await`, `@load`, or `@defer` for async values.
+
+## `@do`
+
+Use `@do` for synchronous server statements inside markup:
+
+```web
+@do {
+  discount: int = user.isPremium ? 20 : 0
+  total: int = price - discount
+}
+
+<p>Total: {total}</p>
+```
+
+`@do` rejects `await`, `fetch`, `spawn`, `timeout`, and `throw`. See [Server Logic](./server-logic).
 
 ## `@do`
 

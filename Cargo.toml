@@ -5,6 +5,9 @@ edition = "2021"
 
 [dependencies]
 ariadne = "0.4"
+async-recursion = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "time"] }
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 
 [[bin]]
 name = "web"

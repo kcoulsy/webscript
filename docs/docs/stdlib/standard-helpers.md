@@ -1,3 +1,7 @@
+---
+sidebar_position: 1
+---
+
 # Standard Helpers
 
 This page lists common helpers expected from the WebScript runtime.

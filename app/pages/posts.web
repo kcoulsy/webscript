@@ -1,15 +1,36 @@
 @page "/posts/{slug:string}"
 
+@load {
+  _: object = await sleep(5ms)
+  headline: string = "Loaded post: " + slug
+}
+
 @let title = "Post: " + slug
 @let isIntro = slug == "intro"
 
 <main>
   <h1>{title}</h1>
+  <p>@load headline: {headline}</p>
   <p>This route is using a typed path parameter.</p>
+
+  @do {
+    badge: string = "draft"
+    if isIntro {
+      badge = "featured"
+    }
+  }
+
+  <p>@do badge: {badge}</p>
 
   @if isIntro {
     <p>This post gets special copy because the route param matched "intro".</p>
   } @else {
     <p>Try /posts/intro to see an equality expression change this branch.</p>
   }
+
+  <nav>
+    <a href="/">Home</a>
+    <a href="/async-demo">Async demo</a>
+    <a href="/fetch-demo">Fetch demo</a>
+  </nav>
 </main>

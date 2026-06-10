@@ -1,0 +1,10 @@
+{
+  "label": "Tutorial",
+  "position": 2,
+  "link": {
+    "type": "generated-index",
+    "slug": "/tutorial",
+    "title": "Build a Web App",
+    "description": "Step-by-step tutorial that walks through the core WebScript features by building a small posts app."
+  }
+}

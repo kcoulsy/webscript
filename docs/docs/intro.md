@@ -1,3 +1,9 @@
+---
+sidebar_position: 1
+slug: /intro
+title: Overview
+---
+
 # Overview
 
 WebScript combines a server scripting language, typed template engine, routing system, action framework, auth layer, response API, and tiny client runtime into one framework.

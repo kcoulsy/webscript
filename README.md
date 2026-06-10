@@ -12,34 +12,53 @@ The core design goals are:
 
 ## Documentation
 
+Docs are published with [Docusaurus](docs/) under `docs/docs/`.
+
+```bash
+cd docs
+pnpm install
+pnpm start
+```
+
 Start here:
 
-- [Overview](docs/overview.md)
-- [Getting Started](docs/getting-started.md)
-- [Project Structure](docs/project-structure.md)
-- [CLI](docs/cli.md)
-- [Configuration](docs/configuration.md)
-- [Language Syntax](docs/language-syntax.md)
-- [Directive Reference](docs/directive-reference.md)
-- [HTML Templates](docs/html-templates.md)
-- [Control Flow](docs/control-flow.md)
-- [Async Rendering](docs/async-rendering.md)
-- [Components](docs/components.md)
-- [Layouts](docs/layouts.md)
-- [Routing](docs/routing.md)
-- [Data Loading And Actions](docs/data-loading-and-actions.md)
-- [Forms And Validation](docs/forms-and-validation.md)
-- [Auth And Sessions](docs/auth-and-sessions.md)
-- [Requests And Responses](docs/requests-and-responses.md)
-- [API Routes](docs/api-routes.md)
-- [Client Interactivity](docs/client-interactivity.md)
-- [Styling And Assets](docs/styling-and-assets.md)
-- [Runtime And Deployment](docs/runtime-and-deployment.md)
-- [Type System](docs/type-system.md)
-- [Error Handling](docs/error-handling.md)
-- [Security](docs/security.md)
-- [Standard Helpers](docs/standard-helpers.md)
-- [Examples](docs/examples.md)
+- [Overview](docs/docs/intro.md)
+- [Tutorial: build a web app](docs/docs/tutorial/01-project-setup.md)
+
+**Language**
+
+- [Syntax](docs/docs/language/syntax.md)
+- [Control Flow](docs/docs/language/control-flow.md)
+- [Type System](docs/docs/language/type-system.md)
+- [HTML Templates](docs/docs/language/html-templates.md)
+- [Directives](docs/docs/language/directives.md)
+- [Server Logic](docs/docs/language/server-logic.md)
+
+**Standard library**
+
+- [Standard Helpers](docs/docs/stdlib/standard-helpers.md)
+
+**Guides**
+
+- [Getting Started](docs/docs/guides/getting-started.md)
+- [Project Structure](docs/docs/guides/project-structure.md)
+- [CLI](docs/docs/guides/cli.md)
+- [Configuration](docs/docs/guides/configuration.md)
+- [Components](docs/docs/guides/components.md)
+- [Layouts](docs/docs/guides/layouts.md)
+- [Routing](docs/docs/guides/routing.md)
+- [Data Loading And Actions](docs/docs/guides/data-loading-and-actions.md)
+- [Forms And Validation](docs/docs/guides/forms-and-validation.md)
+- [Auth And Sessions](docs/docs/guides/auth-and-sessions.md)
+- [Requests And Responses](docs/docs/guides/requests-and-responses.md)
+- [API Routes](docs/docs/guides/api-routes.md)
+- [Client Interactivity](docs/docs/guides/client-interactivity.md)
+- [Async Rendering](docs/docs/guides/async-rendering.md)
+- [Styling And Assets](docs/docs/guides/styling-and-assets.md)
+- [Runtime And Deployment](docs/docs/guides/runtime-and-deployment.md)
+- [Error Handling](docs/docs/guides/error-handling.md)
+- [Security](docs/docs/guides/security.md)
+- [Examples](docs/docs/guides/examples.md)
 
 ## Design Rule
 
@@ -55,8 +74,10 @@ Supported today:
 - `web routes` discovers explicit `@page` routes under `app/`.
 - `web check` parses `.web` files and validates template bindings, simple `@if` conditions, and `@for` loops.
 - `web serve --port 3000` serves pages directly from `.web` files.
+- `@load` and `@action` server blocks with `fn`, `while`, `try/catch`, `throw`, `await`, `sleep`, `spawn`, `timeout`, and `fetch`.
+- `@do` sync server blocks (no `await`/`fetch`).
 
-The first supported language slice is intentionally small, but now includes template expressions, bool `@if` blocks, array `@let` values, scoped `@for` loops, typed component props, and simple `string`/`int` route params:
+The first supported language slice includes template expressions, bool `@if` blocks, array `@let` values, scoped `@for` loops, typed component props, simple `string`/`int` route params, and server logic documented in [Server Logic](docs/docs/language/server-logic.md):
 
 ```web
 @page "/"

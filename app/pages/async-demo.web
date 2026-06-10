@@ -1,0 +1,47 @@
+@page "/async-demo"
+
+@load {
+  fn countUpTo(limit: int): int {
+    current := 0
+    while current < limit {
+      current = current + 1
+    }
+    return current
+  }
+
+  steps: int = 0
+  message: string = ""
+  timedOut: bool = false
+
+  try {
+    _: object = await sleep(25ms)
+    steps = countUpTo(5)
+
+    task := spawn(sleep(2s))
+    try {
+      _: object = await timeout(100ms, task)
+    } catch err {
+      timedOut = err.message == "timeout"
+    }
+
+    if timedOut {
+      message = "timeout fired after " + steps + " steps"
+    }
+    if !timedOut {
+      message = "unexpected: task finished"
+    }
+  } catch err {
+    throw("load failed: " + err.message)
+  }
+}
+
+<main>
+  <h1>Async demo</h1>
+  <p>Steps from <code>fn</code> + <code>while</code>: {steps}</p>
+  <p><code>sleep</code>, <code>spawn</code>, <code>timeout</code>: {message}</p>
+  <p>Timed out: {timedOut}</p>
+  <nav>
+    <a href="/">Home</a>
+    <a href="/fetch-demo">Fetch demo</a>
+  </nav>
+</main>

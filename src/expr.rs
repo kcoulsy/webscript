@@ -8,6 +8,13 @@ pub type Env = BTreeMap<String, Value>;
 pub enum Expr {
     Literal(Value),
     Path(Vec<String>),
+    Call {
+        callee: Box<Expr>,
+        args: Vec<Expr>,
+    },
+    Await {
+        expr: Box<Expr>,
+    },
     Unary {
         op: UnaryOp,
         expr: Box<Expr>,
@@ -58,6 +65,12 @@ pub fn evaluate(expr: &Expr, env: &Env, line: usize, column: usize) -> Result<Va
     match expr {
         Expr::Literal(value) => Ok(value.clone()),
         Expr::Path(path) => evaluate_path(path, env, line, column),
+        Expr::Call { callee, args } => evaluate_call(callee, args, env, line, column),
+        Expr::Await { .. } => Err(Diagnostic::error(
+            Span::at(line, column),
+            "`await` is only supported in `@load` and `@action` blocks",
+            None,
+        )),
         Expr::Unary { op, expr } => {
             let value = evaluate(expr, env, line, column)?;
             match op {
@@ -109,6 +122,80 @@ pub fn evaluate(expr: &Expr, env: &Env, line: usize, column: usize) -> Result<Va
             }
         }
     }
+}
+
+fn evaluate_call(
+    callee: &Expr,
+    args: &[Expr],
+    env: &Env,
+    line: usize,
+    column: usize,
+) -> Result<Value, Diagnostic> {
+    let Expr::Path(path) = callee else {
+        return Err(Diagnostic::error(
+            Span::at(line, column),
+            "only simple function calls are supported",
+            None,
+        ));
+    };
+    let Some(name) = path.first() else {
+        return Err(Diagnostic::error(
+            Span::at(line, column),
+            "empty function call",
+            None,
+        ));
+    };
+    if path.len() != 1 {
+        return Err(Diagnostic::error(
+            Span::at(line, column),
+            format!("unknown function `{}`", path.join(".")),
+            None,
+        ));
+    }
+
+    if let Some(Value::Function { params, body, .. }) = env.get(name).cloned() {
+        if params.len() != args.len() {
+            return Err(Diagnostic::error(
+                Span::at(line, column),
+                format!(
+                    "function `{name}` expects {} arguments, found {}",
+                    params.len(),
+                    args.len()
+                ),
+                None,
+            ));
+        }
+        let mut call_env = env.clone();
+        for (param, arg) in params.iter().zip(args.iter()) {
+            let value = evaluate(arg, env, line, column)?;
+            call_env.insert(param.name.clone(), value);
+        }
+        let mut session = BTreeMap::new();
+        if let Some(Value::Object(session_value)) = env.get("session") {
+            session = session_value.clone();
+        }
+        let outcome = crate::stmt::execute_sync(&body, &mut call_env, &mut session)?;
+        return match outcome {
+            Some(crate::stmt::BlockOutcome::Return(value)) => Ok(value),
+            Some(crate::stmt::BlockOutcome::Fail(message)) => Err(Diagnostic::error(
+                Span::at(line, column),
+                message,
+                Some("function returned fail".to_string()),
+            )),
+            Some(crate::stmt::BlockOutcome::Redirect(target)) => Err(Diagnostic::error(
+                Span::at(line, column),
+                format!("function redirected to `{target}`"),
+                None,
+            )),
+            None => Ok(Value::Object(BTreeMap::new())),
+        };
+    }
+
+    Err(Diagnostic::error(
+        Span::identifier(line, column, name),
+        format!("unknown function `{name}`"),
+        None,
+    ))
 }
 
 fn evaluate_path(
@@ -273,6 +360,8 @@ enum TokenKind {
     Identifier,
     String,
     Int,
+    Duration,
+    Await,
     True,
     False,
     Bang,
@@ -323,6 +412,7 @@ fn tokenize(source: &str, line: usize, column: usize) -> Result<Vec<Token>, Diag
             let kind = match lexeme.as_str() {
                 "true" => TokenKind::True,
                 "false" => TokenKind::False,
+                "await" => TokenKind::Await,
                 _ => TokenKind::Identifier,
             };
             tokens.push(Token {
@@ -338,6 +428,24 @@ fn tokenize(source: &str, line: usize, column: usize) -> Result<Vec<Token>, Diag
             index += 1;
             while index < chars.len() && chars[index].is_ascii_digit() {
                 index += 1;
+            }
+            if index < chars.len() {
+                let unit_start = index;
+                while index < chars.len() && chars[index].is_ascii_alphabetic() {
+                    index += 1;
+                }
+                if index > unit_start {
+                    let unit: String = chars[unit_start..index].iter().collect();
+                    if matches!(unit.as_str(), "ms" | "s" | "m" | "h" | "d") {
+                        tokens.push(Token {
+                            kind: TokenKind::Duration,
+                            span: Span::new(line, column + start, column + index),
+                            lexeme: chars[start..index].iter().collect(),
+                        });
+                        continue;
+                    }
+                    index = unit_start;
+                }
             }
             tokens.push(Token {
                 kind: TokenKind::Int,
@@ -497,7 +605,39 @@ impl ExprParser {
                 expr: Box::new(expr),
             });
         }
-        self.parse_primary()
+        if self.match_token(TokenKind::Await) {
+            let expr = self.parse_unary()?;
+            return Ok(Expr::Await {
+                expr: Box::new(expr),
+            });
+        }
+        self.parse_postfix()
+    }
+
+    fn parse_postfix(&mut self) -> Result<Expr, Diagnostic> {
+        let mut expr = self.parse_primary()?;
+        while self.match_token(TokenKind::LParen) {
+            let open_span = self.previous_span();
+            let mut args = Vec::new();
+            if !self.match_token(TokenKind::RParen) {
+                loop {
+                    args.push(self.parse_or()?);
+                    if self.match_token(TokenKind::RParen) {
+                        break;
+                    }
+                    self.expect(
+                        TokenKind::Comma,
+                        "expected `,` between arguments",
+                        open_span.clone(),
+                    )?;
+                }
+            }
+            expr = Expr::Call {
+                callee: Box::new(expr),
+                args,
+            };
+        }
+        Ok(expr)
     }
 
     fn parse_primary(&mut self) -> Result<Expr, Diagnostic> {
@@ -516,6 +656,7 @@ impl ExprParser {
             TokenKind::Int => Ok(Expr::Literal(Value::Int(
                 token.lexeme.parse().expect("int token contains digits"),
             ))),
+            TokenKind::Duration => Ok(Expr::Literal(parse_duration_literal(&token.lexeme)?)),
             TokenKind::True => Ok(Expr::Literal(Value::Bool(true))),
             TokenKind::False => Ok(Expr::Literal(Value::Bool(false))),
             TokenKind::Identifier => {
@@ -726,6 +867,31 @@ fn infer_array_element_type(values: &[Value]) -> String {
 
 fn type_names_match(actual: &str, expected: &str) -> bool {
     actual == expected || (expected == "object" && actual.starts_with('{'))
+}
+
+fn parse_duration_literal(source: &str) -> Result<Value, Diagnostic> {
+    let digits_end = source
+        .find(|c: char| !c.is_ascii_digit())
+        .unwrap_or(source.len());
+    let amount: i64 = source[..digits_end]
+        .parse()
+        .map_err(|_| Diagnostic::error(Span::at(1, 1), "invalid duration", None))?;
+    let unit = &source[digits_end..];
+    let ms = match unit {
+        "ms" => amount,
+        "s" => amount * 1000,
+        "m" => amount * 60 * 1000,
+        "h" => amount * 60 * 60 * 1000,
+        "d" => amount * 24 * 60 * 60 * 1000,
+        _ => {
+            return Err(Diagnostic::error(
+                Span::at(1, 1),
+                format!("unknown duration unit `{unit}`"),
+                None,
+            ))
+        }
+    };
+    Ok(Value::Duration { ms })
 }
 
 fn binary_op(kind: TokenKind) -> BinaryOp {

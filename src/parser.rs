@@ -1,5 +1,6 @@
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
+use crate::stmt::{self, Statement};
 use std::collections::BTreeMap;
 
 fn parse_diagnostic(
@@ -19,41 +20,21 @@ fn parse_diagnostic_line(line: usize, message: impl Into<String>) -> Diagnostic 
 pub struct WebFile {
     pub route: Option<RoutePattern>,
     pub component: Option<ComponentDecl>,
+    pub load: Option<ServerBlock>,
     pub actions: Vec<ActionDecl>,
     pub lets: Vec<LetDecl>,
     pub template: Vec<TemplateNode>,
 }
 
 #[derive(Debug, Clone)]
-pub struct ActionDecl {
-    pub name: String,
-    pub statements: Vec<ActionStatement>,
+pub struct ServerBlock {
+    pub statements: Vec<Statement>,
 }
 
 #[derive(Debug, Clone)]
-pub enum ActionStatement {
-    If {
-        condition: expr::Expr,
-        statements: Vec<ActionStatement>,
-        line: usize,
-        column: usize,
-    },
-    SetSession {
-        field: String,
-        value: expr::Expr,
-        line: usize,
-        column: usize,
-    },
-    Fail {
-        message: String,
-        line: usize,
-        column: usize,
-    },
-    Redirect {
-        target: String,
-        line: usize,
-        column: usize,
-    },
+pub struct ActionDecl {
+    pub name: String,
+    pub statements: Vec<Statement>,
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +93,10 @@ pub enum TemplateNode {
         source: SourceExpr,
         body: Vec<TemplateNode>,
     },
+    Do {
+        statements: Vec<Statement>,
+        line: usize,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -156,6 +141,18 @@ pub enum Value {
         element_type: String,
         values: Vec<Value>,
     },
+    Duration {
+        ms: i64,
+    },
+    Function {
+        name: String,
+        params: Vec<stmt::FnParam>,
+        return_type: Option<String>,
+        body: Vec<Statement>,
+    },
+    Promise {
+        id: u64,
+    },
 }
 
 impl Value {
@@ -166,6 +163,9 @@ impl Value {
             Value::Bool(value) => value.to_string(),
             Value::Object(_) => "[object]".to_string(),
             Value::Array { .. } => "[array]".to_string(),
+            Value::Duration { ms } => format!("{ms}ms"),
+            Value::Function { name, .. } => format!("<fn {name}>"),
+            Value::Promise { .. } => "<promise>".to_string(),
         }
     }
 
@@ -214,6 +214,16 @@ impl Value {
                 format!("{{ {fields} }}")
             }
             Value::Array { element_type, .. } => format!("{element_type}[]"),
+            Value::Duration { .. } => "duration".to_string(),
+            Value::Function { .. } => "function".to_string(),
+            Value::Promise { .. } => "promise".to_string(),
+        }
+    }
+
+    pub fn duration_ms(&self) -> Option<i64> {
+        match self {
+            Value::Duration { ms } => Some(*ms),
+            _ => None,
         }
     }
 }
@@ -231,6 +241,7 @@ fn sample_value(type_name: &str) -> Option<Value> {
 pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
     let mut route = None;
     let mut component = None;
+    let mut load = None;
     let mut actions = Vec::new();
     let mut lets = Vec::new();
     let mut template_start = None;
@@ -270,6 +281,11 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
             continue;
         }
 
+        if trimmed.starts_with("@load") {
+            load = Some(parse_server_directive(&lines, &mut line_index, "@load")?);
+            continue;
+        }
+
         if trimmed.starts_with("@action") {
             actions.push(parse_action(&lines, &mut line_index)?);
             continue;
@@ -303,6 +319,7 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
     Ok(WebFile {
         route,
         component,
+        load,
         actions,
         lets,
         template,
@@ -328,6 +345,14 @@ fn parse_nodes(
 
         if trimmed.starts_with("@if ") {
             nodes.push(parse_if(lines, cursor, lets)?);
+            if *cursor < lines.len() && !is_block_close(lines[*cursor].trim()) {
+                nodes.push(TemplateNode::Text("\n".to_string()));
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("@do") {
+            nodes.push(parse_do(lines, cursor)?);
             if *cursor < lines.len() && !is_block_close(lines[*cursor].trim()) {
                 nodes.push(TemplateNode::Text("\n".to_string()));
             }
@@ -433,6 +458,32 @@ fn parse_component(lines: &[&str], cursor: &mut usize) -> Result<ComponentDecl, 
     ))
 }
 
+fn parse_server_directive(
+    lines: &[&str],
+    cursor: &mut usize,
+    directive: &str,
+) -> Result<ServerBlock, Diagnostic> {
+    let line_number = *cursor + 1;
+    let trimmed = lines[*cursor].trim();
+    if trimmed != format!("{directive} {{") {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("{directive} expects `{directive} {{`"),
+        ));
+    }
+    *cursor += 1;
+    let statements =
+        stmt::parse_server_block(lines, cursor, line_number, stmt::BlockMode::AsyncCapable)?;
+    if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("unclosed {directive} block"),
+        ));
+    }
+    *cursor += 1;
+    Ok(ServerBlock { statements })
+}
+
 fn parse_action(lines: &[&str], cursor: &mut usize) -> Result<ActionDecl, Diagnostic> {
     let line_number = *cursor + 1;
     let trimmed = lines[*cursor].trim();
@@ -453,7 +504,8 @@ fn parse_action(lines: &[&str], cursor: &mut usize) -> Result<ActionDecl, Diagno
     }
 
     *cursor += 1;
-    let statements = parse_action_statements(lines, cursor, line_number)?;
+    let statements =
+        stmt::parse_server_block(lines, cursor, line_number, stmt::BlockMode::AsyncCapable)?;
     if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
         return Err(parse_diagnostic_line(line_number, "unclosed @action block"));
     }
@@ -465,146 +517,23 @@ fn parse_action(lines: &[&str], cursor: &mut usize) -> Result<ActionDecl, Diagno
     })
 }
 
-fn parse_action_statements(
-    lines: &[&str],
-    cursor: &mut usize,
-    block_line: usize,
-) -> Result<Vec<ActionStatement>, Diagnostic> {
-    let mut statements = Vec::new();
-
-    while *cursor < lines.len() {
-        let statement_line = *cursor + 1;
-        let raw_statement = lines[*cursor];
-        let trimmed = raw_statement.trim();
-
-        if trimmed == "}" {
-            return Ok(statements);
-        }
-        if trimmed.is_empty() {
-            *cursor += 1;
-            continue;
-        }
-
-        statements.push(parse_action_statement(
-            lines,
-            cursor,
-            raw_statement,
-            trimmed,
-            statement_line,
-        )?);
+fn parse_do(lines: &[&str], cursor: &mut usize) -> Result<TemplateNode, Diagnostic> {
+    let line_number = *cursor + 1;
+    let trimmed = lines[*cursor].trim();
+    if trimmed != "@do {" {
+        return Err(parse_diagnostic_line(line_number, "@do expects `@do {`"));
     }
-
-    Err(parse_diagnostic_line(block_line, "unclosed action block"))
-}
-
-fn parse_action_statement(
-    lines: &[&str],
-    cursor: &mut usize,
-    raw_line: &str,
-    trimmed: &str,
-    line_number: usize,
-) -> Result<ActionStatement, Diagnostic> {
-    if trimmed.starts_with("if ") {
-        let condition_source = trimmed
-            .strip_prefix("if")
-            .expect("if prefix already checked")
-            .trim()
-            .strip_suffix('{')
-            .ok_or_else(|| {
-                parse_diagnostic_line(line_number, "action if expects `if condition {`")
-            })?
-            .trim();
-        let column = raw_line
-            .find(condition_source)
-            .map(|index| index + 1)
-            .unwrap_or(1);
-        let condition = expr::parse(condition_source, line_number, column)?;
-        *cursor += 1;
-        let statements = parse_action_statements(lines, cursor, line_number)?;
-        if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
-            return Err(parse_diagnostic_line(
-                line_number,
-                "unclosed action if block",
-            ));
-        }
-        *cursor += 1;
-        return Ok(ActionStatement::If {
-            condition,
-            statements,
-            line: line_number,
-            column,
-        });
-    }
-
-    if let Some(rest) = trimmed.strip_prefix("session.") {
-        let (field, value_source) = rest.split_once('=').ok_or_else(|| {
-            parse_diagnostic_line(
-                line_number,
-                "session action statements use `session.name = value`",
-            )
-        })?;
-        let field = field.trim();
-        if !is_identifier(field) {
-            return Err(parse_diagnostic_line(
-                line_number,
-                format!("invalid session field `{field}`"),
-            ));
-        }
-
-        let value_source = value_source.trim();
-        let column = raw_line
-            .find(value_source)
-            .map(|index| index + 1)
-            .unwrap_or(1);
-        *cursor += 1;
-        return Ok(ActionStatement::SetSession {
-            field: field.to_string(),
-            value: expr::parse(value_source, line_number, column)?,
-            line: line_number,
-            column,
-        });
-    }
-
-    if let Some(rest) = trimmed.strip_prefix("fail(") {
-        let message_source = rest.strip_suffix(')').ok_or_else(|| {
-            parse_diagnostic_line(line_number, "fail statements use `fail(\"message\")`")
-        })?;
-        let message = parse_quoted(message_source).ok_or_else(|| {
-            parse_diagnostic_line(line_number, "fail message must be a quoted string")
-        })?;
-        let column = raw_line.find("fail").map(|index| index + 1).unwrap_or(1);
-        *cursor += 1;
-        return Ok(ActionStatement::Fail {
-            message,
-            line: line_number,
-            column,
-        });
-    }
-
-    if let Some(rest) = trimmed.strip_prefix("redirect(") {
-        let target_source = rest.strip_suffix(')').ok_or_else(|| {
-            parse_diagnostic_line(line_number, "redirect statements use `redirect(\"/path\")`")
-        })?;
-        let target = parse_quoted(target_source).ok_or_else(|| {
-            parse_diagnostic_line(line_number, "redirect target must be a quoted path")
-        })?;
-        let column = raw_line
-            .find("redirect")
-            .map(|index| index + 1)
-            .unwrap_or(1);
-        *cursor += 1;
-        return Ok(ActionStatement::Redirect {
-            target,
-            line: line_number,
-            column,
-        });
-    }
-
     *cursor += 1;
-    Err(parse_diagnostic_line(
-        line_number,
-        format!("unsupported action statement `{trimmed}`"),
-    ))
+    let statements =
+        stmt::parse_server_block(lines, cursor, line_number, stmt::BlockMode::SyncOnly)?;
+    if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
+        return Err(parse_diagnostic_line(line_number, "unclosed @do block"));
+    }
+    *cursor += 1;
+    Ok(TemplateNode::Do {
+        statements,
+        line: line_number,
+    })
 }
 
 fn parse_prop_decl(line: &str, line_number: usize) -> Result<PropDecl, Diagnostic> {
@@ -1440,6 +1369,17 @@ mod tests {
             LetValue::Expr(expr::Expr::Literal(Value::Array { element_type, values }))
                 if element_type == "object" && values.len() == 2
         ));
+    }
+
+    #[test]
+    fn parses_load_blocks() {
+        let parsed = parse(
+            "@page \"/fetch-demo\"\n\n@load {\n  status: int = 0\n  error: string = \"\"\n}\n\n<p>{status}</p>",
+        )
+        .expect("valid page");
+
+        assert!(parsed.load.is_some());
+        assert_eq!(parsed.load.as_ref().expect("load").statements.len(), 2);
     }
 
     #[test]

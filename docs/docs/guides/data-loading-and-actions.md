@@ -20,6 +20,25 @@ WebScript separates data reads from mutations while keeping both close to the ma
 
 Values declared in `@load` are available to the page template.
 
+`@load` supports full server logic — functions, loops, try/catch, throw, and async builtins (`fetch`, `sleep`, `spawn`, `timeout`). See [Server Logic](../language/server-logic).
+
+Example with `fetch` and error handling:
+
+```web
+@load {
+  error: string = ""
+
+  try {
+    response := await fetch("https://httpbin.org/status/404")
+    if !response.ok {
+      throw("upstream returned " + response.status)
+    }
+  } catch err {
+    error = err.message
+  }
+}
+```
+
 ## Returning From `@load`
 
 `@load` can return a response:

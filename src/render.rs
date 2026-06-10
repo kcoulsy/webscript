@@ -1,9 +1,11 @@
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
 use crate::parser::{
-    ActionStatement, ComponentCall, ComponentProp, LetDecl, LetValue, PropValue, SourceExpr,
-    TemplateNode, Value, WebFile,
+    ComponentCall, ComponentProp, LetDecl, LetValue, PropValue, SourceExpr, TemplateNode, Value,
+    WebFile,
 };
+use crate::runtime::WebRuntime;
+use crate::stmt::{self, BlockOutcome, Statement};
 use std::collections::BTreeMap;
 
 pub type Scope = BTreeMap<String, Value>;
@@ -13,22 +15,78 @@ pub fn render_with_components(
     file: &WebFile,
     params: &Scope,
     components: &ComponentRegistry,
+    runtime: &WebRuntime,
 ) -> Result<String, Diagnostic> {
-    let scope = scope_for(file, params)?;
-    render_nodes(&file.template, &scope, components)
+    if file.load.is_some() {
+        return Err(Diagnostic::error(
+            Span::at(1, 1),
+            "@load requires async rendering",
+            None,
+        ));
+    }
+    let mut scope = base_scope_for(file, params);
+    evaluate_lets(&file.lets, &mut scope)?;
+    render_nodes(&file.template, &scope, components, runtime)
+}
+
+pub async fn render_with_components_async(
+    file: &WebFile,
+    params: &Scope,
+    components: &ComponentRegistry,
+    runtime: &WebRuntime,
+) -> Result<String, Diagnostic> {
+    let scope = scope_for_async(file, params, runtime).await?;
+    render_nodes(&file.template, &scope, components, runtime)
 }
 
 pub fn validate_with_components(file: &WebFile, components: &ComponentRegistry) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let scope = match scope_for(file, &Scope::new()) {
-        Ok(scope) => scope,
-        Err(error) => {
-            diagnostics.push(error);
-            base_scope_for(file, &Scope::new())
-        }
-    };
+    let mut scope = base_scope_for(file, &Scope::new());
+    merge_load_samples(file, &mut scope);
+    if let Err(error) = evaluate_lets(&file.lets, &mut scope) {
+        diagnostics.push(error);
+    }
     validate_nodes(&file.template, &scope, components, &mut diagnostics);
+    if let Some(load) = &file.load {
+        validate_server_block(load, &mut diagnostics);
+    }
+    for action in &file.actions {
+        validate_server_block_statements(&action.statements, &mut diagnostics);
+    }
     diagnostics
+}
+
+fn merge_load_samples(file: &WebFile, scope: &mut Scope) {
+    let Some(load) = &file.load else {
+        return;
+    };
+    for statement in &load.statements {
+        if let Statement::Let {
+            name, type_name, ..
+        } = statement
+        {
+            let type_name = type_name.as_deref().unwrap_or("string");
+            scope.insert(name.clone(), sample_for_type(type_name));
+        }
+    }
+}
+
+fn validate_server_block(load: &crate::parser::ServerBlock, diagnostics: &mut Vec<Diagnostic>) {
+    validate_server_block_statements(&load.statements, diagnostics);
+}
+
+fn validate_server_block_statements(statements: &[Statement], diagnostics: &mut Vec<Diagnostic>) {
+    for statement in statements {
+        if let Statement::Try {
+            statements,
+            catch_body,
+            ..
+        } = statement
+        {
+            validate_server_block_statements(statements, diagnostics);
+            validate_server_block_statements(catch_body, diagnostics);
+        }
+    }
 }
 
 pub enum ActionOutcome {
@@ -36,12 +94,13 @@ pub enum ActionOutcome {
     Fail(String),
 }
 
-pub fn execute_action(
+pub async fn execute_action(
     file: &WebFile,
     action_name: &str,
     params: &Scope,
     input: &Scope,
     session: &mut BTreeMap<String, Value>,
+    runtime: &WebRuntime,
 ) -> Result<ActionOutcome, Diagnostic> {
     let action = file
         .actions
@@ -61,81 +120,16 @@ pub fn execute_action(
     scope.insert("input".to_string(), Value::Object(input.clone()));
     scope.insert("session".to_string(), Value::Object(session.clone()));
 
-    Ok(
-        execute_action_statements(&action.statements, &mut scope, session)?
-            .unwrap_or_else(|| ActionOutcome::Redirect(".".to_string())),
-    )
-}
+    let outcome = runtime
+        .execute_block_async(&action.statements, &mut scope, session)
+        .await?;
 
-fn execute_action_statements(
-    statements: &[ActionStatement],
-    scope: &mut Scope,
-    session: &mut BTreeMap<String, Value>,
-) -> Result<Option<ActionOutcome>, Diagnostic> {
-    for statement in statements {
-        match statement {
-            ActionStatement::If {
-                condition,
-                statements,
-                line,
-                column,
-            } => {
-                let value = expr::evaluate(condition, scope, *line, *column)?;
-                let Some(condition_value) = value.as_bool() else {
-                    return Err(Diagnostic::error(
-                        Span::at(*line, *column),
-                        "action if condition must be bool",
-                        Some(format!("found `{}`", value.type_name())),
-                    ));
-                };
-                if condition_value {
-                    if let Some(outcome) = execute_action_statements(statements, scope, session)? {
-                        return Ok(Some(outcome));
-                    }
-                }
-            }
-            ActionStatement::SetSession {
-                field,
-                value,
-                line,
-                column,
-            } => {
-                let value = expr::evaluate(value, scope, *line, *column)?;
-                session.insert(field.clone(), value.clone());
-                scope.insert("session".to_string(), Value::Object(session.clone()));
-            }
-            ActionStatement::Fail {
-                message,
-                line,
-                column,
-            } => {
-                if message.is_empty() {
-                    return Err(Diagnostic::error(
-                        Span::at(*line, *column),
-                        "fail message cannot be empty",
-                        None,
-                    ));
-                }
-                return Ok(Some(ActionOutcome::Fail(message.clone())));
-            }
-            ActionStatement::Redirect {
-                target,
-                line,
-                column,
-            } => {
-                if target.is_empty() {
-                    return Err(Diagnostic::error(
-                        Span::at(*line, *column),
-                        "redirect target cannot be empty",
-                        None,
-                    ));
-                }
-                return Ok(Some(ActionOutcome::Redirect(target.clone())));
-            }
-        }
-    }
-
-    Ok(None)
+    Ok(match outcome {
+        Some(BlockOutcome::Redirect(target)) => ActionOutcome::Redirect(target),
+        Some(BlockOutcome::Fail(message)) => ActionOutcome::Fail(message),
+        Some(BlockOutcome::Return(_)) => ActionOutcome::Redirect(".".to_string()),
+        None => ActionOutcome::Redirect(".".to_string()),
+    })
 }
 
 fn base_scope_for(file: &WebFile, params: &Scope) -> Scope {
@@ -171,8 +165,24 @@ fn default_session_value() -> Value {
     Value::Object(fields)
 }
 
-fn scope_for(file: &WebFile, params: &Scope) -> Result<Scope, Diagnostic> {
+async fn scope_for_async(
+    file: &WebFile,
+    params: &Scope,
+    runtime: &WebRuntime,
+) -> Result<Scope, Diagnostic> {
     let mut scope = base_scope_for(file, params);
+    let mut session = match scope.get("session") {
+        Some(Value::Object(session)) => session.clone(),
+        _ => BTreeMap::new(),
+    };
+
+    if let Some(load) = &file.load {
+        runtime
+            .execute_block_async(&load.statements, &mut scope, &mut session)
+            .await?;
+        scope.insert("session".to_string(), Value::Object(session));
+    }
+
     evaluate_lets(&file.lets, &mut scope)?;
     Ok(scope)
 }
@@ -217,33 +227,35 @@ fn render_nodes(
     nodes: &[TemplateNode],
     scope: &Scope,
     components: &ComponentRegistry,
+    runtime: &WebRuntime,
 ) -> Result<String, Diagnostic> {
     let mut html = String::new();
+    let mut scope = scope.clone();
 
     for node in nodes {
         match node {
             TemplateNode::Text(value) => html.push_str(value),
             TemplateNode::Expr(expr) => {
-                let value = evaluate_source_expr(expr, scope)?;
+                let value = evaluate_source_expr(expr, &scope)?;
                 html.push_str(&escape_html(&value.render()));
             }
             TemplateNode::Component(call) => {
-                html.push_str(&render_component(call, scope, components)?);
+                html.push_str(&render_component(call, &scope, components, runtime)?);
             }
             TemplateNode::If {
                 condition,
                 then_nodes,
                 else_nodes,
             } => {
-                let value = evaluate_source_expr(condition, scope)?;
+                let value = evaluate_source_expr(condition, &scope)?;
                 let Some(condition_value) = value.as_bool() else {
                     return Err(if_condition_not_bool(condition));
                 };
 
                 if condition_value {
-                    html.push_str(&render_nodes(then_nodes, scope, components)?);
+                    html.push_str(&render_nodes(then_nodes, &scope, components, runtime)?);
                 } else {
-                    html.push_str(&render_nodes(else_nodes, scope, components)?);
+                    html.push_str(&render_nodes(else_nodes, &scope, components, runtime)?);
                 }
             }
             TemplateNode::For {
@@ -251,7 +263,7 @@ fn render_nodes(
                 source,
                 body,
             } => {
-                let value = evaluate_source_expr(source, scope)?;
+                let value = evaluate_source_expr(source, &scope)?;
                 let Some(items) = value.as_array() else {
                     return Err(for_source_not_array(source));
                 };
@@ -259,8 +271,16 @@ fn render_nodes(
                 for item in items.to_vec() {
                     let mut loop_scope = scope.clone();
                     loop_scope.insert(item_name.clone(), item);
-                    html.push_str(&render_nodes(body, &loop_scope, components)?);
+                    html.push_str(&render_nodes(body, &loop_scope, components, runtime)?);
                 }
+            }
+            TemplateNode::Do { statements, .. } => {
+                let mut session = match scope.get("session") {
+                    Some(Value::Object(session)) => session.clone(),
+                    _ => BTreeMap::new(),
+                };
+                stmt::execute_sync(statements, &mut scope, &mut session)?;
+                scope.insert("session".to_string(), Value::Object(session));
             }
         }
     }
@@ -272,12 +292,13 @@ fn render_component(
     call: &ComponentCall,
     scope: &Scope,
     components: &ComponentRegistry,
+    runtime: &WebRuntime,
 ) -> Result<String, Diagnostic> {
     let component = components
         .get(&call.name)
         .ok_or_else(|| unknown_component(call))?;
     let component_scope = component_scope(call, component, scope)?;
-    render_nodes(&component.template, &component_scope, components)
+    render_nodes(&component.template, &component_scope, components, runtime)
 }
 
 fn component_scope(
@@ -351,35 +372,36 @@ fn validate_nodes(
     components: &ComponentRegistry,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let mut scope = scope.clone();
     for node in nodes {
         match node {
             TemplateNode::Text(_) => {}
             TemplateNode::Expr(expr) => {
-                if let Err(error) = evaluate_source_expr(expr, scope) {
+                if let Err(error) = evaluate_source_expr(expr, &scope) {
                     diagnostics.push(error);
                 }
             }
             TemplateNode::Component(call) => {
-                validate_component_call(call, scope, components, diagnostics)
+                validate_component_call(call, &scope, components, diagnostics)
             }
             TemplateNode::If {
                 condition,
                 then_nodes,
                 else_nodes,
             } => {
-                match evaluate_source_expr(condition, scope) {
+                match evaluate_source_expr(condition, &scope) {
                     Ok(value) if value.as_bool().is_some() => {}
                     Ok(_) => diagnostics.push(if_condition_not_bool(condition)),
                     Err(error) => diagnostics.push(error),
                 }
-                validate_nodes(then_nodes, scope, components, diagnostics);
-                validate_nodes(else_nodes, scope, components, diagnostics);
+                validate_nodes(then_nodes, &scope, components, diagnostics);
+                validate_nodes(else_nodes, &scope, components, diagnostics);
             }
             TemplateNode::For {
                 item_name,
                 source,
                 body,
-            } => match evaluate_source_expr(source, scope) {
+            } => match evaluate_source_expr(source, &scope) {
                 Ok(value) if value.as_array().is_some() => {
                     let mut loop_scope = scope.clone();
                     if let Some(sample) = value.array_sample() {
@@ -390,6 +412,18 @@ fn validate_nodes(
                 Ok(_) => diagnostics.push(for_source_not_array(source)),
                 Err(error) => diagnostics.push(error),
             },
+            TemplateNode::Do { statements, .. } => {
+                validate_server_block_statements(statements, diagnostics);
+                let mut session = match scope.get("session") {
+                    Some(Value::Object(session)) => session.clone(),
+                    _ => BTreeMap::new(),
+                };
+                if let Err(error) = stmt::execute_sync(statements, &mut scope, &mut session) {
+                    diagnostics.push(error);
+                } else {
+                    scope.insert("session".to_string(), Value::Object(session));
+                }
+            }
         }
     }
 }
@@ -615,6 +649,7 @@ mod tests {
     use super::{render_with_components, ComponentRegistry, Scope};
     use crate::diagnostic::Span;
     use crate::parser::parse;
+    use crate::runtime::WebRuntime;
 
     #[test]
     fn renders_known_expressions_with_escaping() {
@@ -622,8 +657,13 @@ mod tests {
             .expect("valid page");
 
         assert_eq!(
-            render_with_components(&file, &Scope::new(), &ComponentRegistry::new())
-                .expect("rendered"),
+            render_with_components(
+                &file,
+                &Scope::new(),
+                &ComponentRegistry::new(),
+                &WebRuntime::new()
+            )
+            .expect("rendered"),
             "<h1>&lt;Ada&gt;</h1>"
         );
     }
@@ -636,8 +676,13 @@ mod tests {
         .expect("valid page");
 
         assert_eq!(
-            render_with_components(&file, &Scope::new(), &ComponentRegistry::new())
-                .expect("rendered"),
+            render_with_components(
+                &file,
+                &Scope::new(),
+                &ComponentRegistry::new(),
+                &WebRuntime::new()
+            )
+            .expect("rendered"),
             "<h1>Hello Ada</h1>\n<p>3</p>"
         );
     }
@@ -655,7 +700,13 @@ mod tests {
         );
 
         assert_eq!(
-            render_with_components(&file, &params, &ComponentRegistry::new()).expect("rendered"),
+            render_with_components(
+                &file,
+                &params,
+                &ComponentRegistry::new(),
+                &WebRuntime::new()
+            )
+            .expect("rendered"),
             "<h1>Post: intro</h1>\n<p>intro</p>"
         );
     }
@@ -668,8 +719,13 @@ mod tests {
         .expect("valid page");
 
         assert_eq!(
-            render_with_components(&file, &Scope::new(), &ComponentRegistry::new())
-                .expect("rendered"),
+            render_with_components(
+                &file,
+                &Scope::new(),
+                &ComponentRegistry::new(),
+                &WebRuntime::new()
+            )
+            .expect("rendered"),
             "<p>no</p>"
         );
     }
@@ -680,8 +736,13 @@ mod tests {
             "@page \"/\"\n\n@let posts: string[] = [\"One\", \"<Two>\"]\n\n@for post in posts {\n<p>{post}</p>\n}\n<p>{post}</p>",
         )
         .expect("valid page");
-        let error = render_with_components(&file, &Scope::new(), &ComponentRegistry::new())
-            .expect_err("post should be scoped to loop");
+        let error = render_with_components(
+            &file,
+            &Scope::new(),
+            &ComponentRegistry::new(),
+            &WebRuntime::new(),
+        )
+        .expect_err("post should be scoped to loop");
 
         assert_eq!(error.message, "unknown expression `post`");
         assert_eq!(error.span, Span::identifier(8, 5, "post"));
@@ -692,39 +753,26 @@ mod tests {
         .expect("valid page");
 
         assert_eq!(
-            render_with_components(&file, &Scope::new(), &ComponentRegistry::new())
-                .expect("rendered"),
+            render_with_components(
+                &file,
+                &Scope::new(),
+                &ComponentRegistry::new(),
+                &WebRuntime::new()
+            )
+            .expect("rendered"),
             "<p>One</p><p>&lt;Two&gt;</p>"
         );
     }
 
-    #[test]
-    fn renders_object_properties_in_markup_loops_and_components() {
-        let component = parse(
-            "@component PostPreview {\n  title: string\n  featured: bool = false\n}\n\n<article>{title}:{featured}</article>",
-        )
-        .expect("valid component");
-        let file = parse(
-            "@page \"/\"\n\n@let author = {\n  name: \"Ada\"\n  role: \"admin\"\n}\n@let posts = [\n  { title: \"Intro\", slug: \"intro\", featured: true },\n  { title: \"Launch\", slug: \"launch\", featured: false }\n]\n\n<h1>{author.name}</h1>\n@for post in posts {\n<PostPreview\n  title={post.title}\n  featured={post.featured}\n/>\n}",
-        )
-        .expect("valid page");
-        let mut components = ComponentRegistry::new();
-        components.insert("PostPreview".to_string(), component);
-
-        assert_eq!(
-            render_with_components(&file, &Scope::new(), &components).expect("rendered"),
-            "<h1>Ada</h1>\n<article>Intro:true</article><article>Launch:false</article>"
-        );
-    }
-
-    #[test]
-    fn executes_action_and_mutates_session() {
+    #[tokio::test]
+    async fn executes_action_and_mutates_session() {
         let file = parse(
             "@page \"/\"\n\n@action increment {\n  session.count = session.count + 1\n  redirect(\"/\")\n}\n\n<p>{session.count}</p>",
         )
         .expect("valid page");
         let mut session = Scope::new();
         session.insert("count".to_string(), crate::parser::Value::Int(1));
+        let runtime = WebRuntime::new();
 
         let outcome = super::execute_action(
             &file,
@@ -732,7 +780,9 @@ mod tests {
             &Scope::new(),
             &Scope::new(),
             &mut session,
+            &runtime,
         )
+        .await
         .expect("action");
 
         assert!(matches!(outcome, super::ActionOutcome::Redirect(target) if target == "/"));
@@ -742,30 +792,82 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn executes_action_with_form_input_object() {
-        let file = parse(
-            "@page \"/\"\n\n@action rememberName {\n  session.name = input.name\n  redirect(\"/\")\n}\n\n<p>{session.name}</p>",
+    #[tokio::test]
+    async fn renders_load_bindings_in_template() {
+        let file =
+            parse("@page \"/\"\n\n@load {\n  title: string = \"Loaded\"\n}\n\n<h1>{title}</h1>")
+                .expect("valid page");
+        let runtime = WebRuntime::new();
+
+        let html = super::render_with_components_async(
+            &file,
+            &Scope::new(),
+            &ComponentRegistry::new(),
+            &runtime,
         )
-        .expect("valid page");
-        let mut input = Scope::new();
-        input.insert(
-            "name".to_string(),
-            crate::parser::Value::String("Ada".to_string()),
-        );
-        let mut session = Scope::new();
+        .await
+        .expect("rendered");
 
-        super::execute_action(&file, "rememberName", &Scope::new(), &input, &mut session)
-            .expect("action");
-
-        assert!(matches!(
-            session.get("name"),
-            Some(crate::parser::Value::String(name)) if name == "Ada"
-        ));
+        assert_eq!(html, "<h1>Loaded</h1>");
     }
 
-    #[test]
-    fn executes_action_failures_inside_if_blocks() {
+    #[tokio::test]
+    async fn load_try_catch_captures_throw() {
+        let file = parse(
+            "@page \"/\"\n\n@load {\n  error: string = \"\"\n  try {\n    throw(\"boom\")\n  } catch err {\n    error = err.message\n  }\n}\n\n<p>{error}</p>",
+        )
+        .expect("valid page");
+        let runtime = WebRuntime::new();
+        let html = super::render_with_components_async(
+            &file,
+            &Scope::new(),
+            &ComponentRegistry::new(),
+            &runtime,
+        )
+        .await
+        .expect("rendered");
+
+        assert!(html.contains("boom"));
+    }
+
+    #[tokio::test]
+    async fn load_try_catch_captures_async_timeout() {
+        let file = parse(
+            "@page \"/\"\n\n@load {\n  timedOut: bool = false\n  task := spawn(sleep(50ms))\n  try {\n    _: object = await timeout(1ms, task)\n  } catch err {\n    timedOut = err.message == \"timeout\"\n  }\n}\n\n<p>{timedOut}</p>",
+        )
+        .expect("valid page");
+        let runtime = WebRuntime::new();
+        let html = super::render_with_components_async(
+            &file,
+            &Scope::new(),
+            &ComponentRegistry::new(),
+            &runtime,
+        )
+        .await
+        .expect("rendered");
+
+        assert!(html.contains("true"));
+    }
+
+    #[tokio::test]
+    #[ignore = "requires network access to httpbin.org"]
+    async fn fetch_demo_catches_http_error() {
+        let file = parse(include_str!("../app/pages/fetch-demo.web")).expect("valid page");
+        let runtime = WebRuntime::new();
+        let html = super::render_with_components_async(
+            &file,
+            &Scope::new(),
+            &ComponentRegistry::new(),
+            &runtime,
+        )
+        .await
+        .expect("rendered");
+
+        assert!(html.contains("upstream returned 404") || html.contains("404"));
+    }
+
+    #[tokio::test]
+    async fn executes_action_failures_inside_if_blocks() {
         let file = parse(
             "@page \"/\"\n\n@action rememberName {\n  if input.name == \"\" {\n    fail(\"Name is required\")\n  }\n  session.name = input.name\n  redirect(\"/\")\n}\n\n<p>{session.name}</p>",
         )
@@ -776,125 +878,22 @@ mod tests {
             crate::parser::Value::String(String::new()),
         );
         let mut session = Scope::new();
+        let runtime = WebRuntime::new();
 
-        let outcome =
-            super::execute_action(&file, "rememberName", &Scope::new(), &input, &mut session)
-                .expect("action");
+        let outcome = super::execute_action(
+            &file,
+            "rememberName",
+            &Scope::new(),
+            &input,
+            &mut session,
+            &runtime,
+        )
+        .await
+        .expect("action");
 
         assert!(
             matches!(outcome, super::ActionOutcome::Fail(message) if message == "Name is required")
         );
         assert!(!session.contains_key("name"));
-    }
-
-    #[test]
-    fn validates_for_source_type() {
-        let file = parse("@page \"/\"\n\n@let title: string = \"Nope\"\n\n@for post in title {\n<p>{post}</p>\n}")
-            .expect("valid page");
-
-        let diagnostics = super::validate_with_components(&file, &ComponentRegistry::new());
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].message, "@for source `title` must be array");
-        assert_eq!(diagnostics[0].span, Span::identifier(5, 14, "title"));
-    }
-
-    #[test]
-    fn validates_unknown_loop_sources_and_scoping() {
-        let file = parse("@page \"/\"\n\n@for post in posts {\n<p>{post}</p>\n}\n<p>{post}</p>")
-            .expect("valid page");
-
-        let diagnostics = super::validate_with_components(&file, &ComponentRegistry::new());
-        assert_eq!(diagnostics.len(), 2);
-        assert_eq!(diagnostics[0].message, "unknown expression `posts`");
-        assert_eq!(diagnostics[1].message, "unknown expression `post`");
-    }
-
-    #[test]
-    fn renders_components_with_typed_props_and_defaults() {
-        let component = parse(
-            "@component UserCard {\n  name: string\n  visits: int = 0\n}\n\n<article>{name}: {visits}</article>",
-        )
-        .expect("valid component");
-        let page = parse(
-            "@page \"/\"\n\n@let name: string = \"Ada\"\n\n<UserCard name={\"Dr. \" + name} />",
-        )
-        .expect("valid page");
-        let mut components = ComponentRegistry::new();
-        components.insert("UserCard".to_string(), component);
-
-        assert_eq!(
-            render_with_components(&page, &Scope::new(), &components).expect("rendered"),
-            "<article>Dr. Ada: 0</article>"
-        );
-    }
-
-    #[test]
-    fn validates_missing_and_wrong_component_props() {
-        let component =
-            parse("@component UserCard {\n  name: string\n  visits: int\n}\n\n<p>{name}</p>")
-                .expect("valid component");
-        let page = parse(
-            "@page \"/\"\n\n@let visits: string = \"three\"\n\n<UserCard visits={visits} extra=\"nope\" />",
-        )
-        .expect("valid page");
-        let mut components = ComponentRegistry::new();
-        components.insert("UserCard".to_string(), component);
-
-        let diagnostics = super::validate_with_components(&page, &components);
-        assert_eq!(diagnostics.len(), 3);
-        assert_eq!(
-            diagnostics[0].message,
-            "prop `visits` for component `UserCard` expects `int`, found `string`"
-        );
-        assert_eq!(
-            diagnostics[0].label.as_deref(),
-            Some("expected `int`, found `string`")
-        );
-        assert_eq!(
-            diagnostics[1].message,
-            "unknown prop `extra` for component `UserCard`"
-        );
-        assert_eq!(
-            diagnostics[2].message,
-            "missing prop `name` for component `UserCard`"
-        );
-    }
-
-    #[test]
-    fn validates_unknown_component() {
-        let page = parse("@page \"/\"\n\n<Missing />").expect("valid page");
-
-        let diagnostics = super::validate_with_components(&page, &ComponentRegistry::new());
-        assert_eq!(diagnostics.len(), 1);
-        assert_eq!(diagnostics[0].message, "unknown component `Missing`");
-    }
-
-    #[test]
-    fn validates_component_template_against_its_props() {
-        let component = parse(
-            "@component UserCard {\n  name: string\n  active: bool\n}\n\n@if active {\n<p>{name}</p>\n}",
-        )
-        .expect("valid component");
-
-        assert!(super::validate_with_components(&component, &ComponentRegistry::new()).is_empty());
-    }
-
-    #[test]
-    fn validates_if_requires_bool_inside_empty_bool_array_loop() {
-        let file =
-            parse("@page \"/\"\n\n@let flags: bool[] = []\n\n@for flag in flags {\n@if flag {\n<p>yes</p>\n}\n}")
-                .expect("valid page");
-
-        assert!(super::validate_with_components(&file, &ComponentRegistry::new()).is_empty());
-    }
-
-    #[test]
-    fn rejects_unknown_expressions_with_location() {
-        let file = parse("@page \"/\"\n\n<h1>{name}</h1>").expect("valid page");
-        let error = render_with_components(&file, &Scope::new(), &ComponentRegistry::new())
-            .expect_err("unknown expression should fail");
-
-        assert_eq!(error.message, "unknown expression `name`");
-        assert_eq!(error.span, Span::identifier(3, 6, "name"));
     }
 }

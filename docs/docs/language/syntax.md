@@ -1,3 +1,8 @@
+---
+sidebar_position: 1
+title: Syntax
+---
+
 # Language Syntax
 
 WebScript uses `.web` files that combine directives, typed server logic, and HTML-like markup.

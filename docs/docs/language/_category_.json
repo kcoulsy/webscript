@@ -1,0 +1,10 @@
+{
+  "label": "Language",
+  "position": 3,
+  "link": {
+    "type": "generated-index",
+    "slug": "/language",
+    "title": "Language Reference",
+    "description": "Syntax, types, directives, templates, and server logic in WebScript."
+  }
+}
