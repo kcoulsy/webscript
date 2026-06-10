@@ -1,5 +1,6 @@
 use crate::diagnostic::{Diagnostic, Span};
 use crate::parser::{ClientInitial, ClientSignalDecl, EventBinding, Value};
+use crate::schema::parser_value_to_json;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub const RUNTIME_PATH: &str = "/.web/runtime.js";
@@ -17,6 +18,7 @@ pub struct IslandManifest {
     pub value_bindings: Vec<ValueBinding>,
     pub html_bindings: Vec<HtmlBinding>,
     pub if_bindings: Vec<IfBinding>,
+    pub bootstrap: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -353,7 +355,9 @@ pub fn render_island_script(manifest: &IslandManifest) -> String {
     lines.push("    event.preventDefault();".to_string());
     lines.push("    void handlers[name](arg ?? event);".to_string());
     lines.push("  });".to_string());
-    lines.push("  if (handlers.loadInitial) { void handlers.loadInitial(); }".to_string());
+    if let Some(bootstrap) = &manifest.bootstrap {
+        lines.push(format!("  void ({bootstrap});"));
+    }
 
     for if_binding in &manifest.if_bindings {
         let signal = &if_binding.signal;
@@ -1210,11 +1214,14 @@ fn js_event_name(event: &str) -> &'static str {
     }
 }
 
-fn js_literal(value: &Value) -> String {
+pub fn js_literal(value: &Value) -> String {
     match value {
         Value::Int(value) => value.to_string(),
         Value::Bool(value) => value.to_string(),
         Value::String(value) => format!("\"{}\"", escape_js_string(value)),
+        Value::Object(_) | Value::Array { .. } => parser_value_to_json(value)
+            .map(|json| json.to_string())
+            .unwrap_or_else(|_| "null".to_string()),
         _ => "null".to_string(),
     }
 }
@@ -1480,6 +1487,7 @@ mod tests {
             value_bindings: Vec::new(),
             html_bindings: Vec::new(),
             if_bindings: Vec::new(),
+            bootstrap: None,
         };
 
         let script = render_island_script(&manifest);
@@ -1488,6 +1496,21 @@ mod tests {
         assert!(script.contains("data-ws-click=\"0\""));
         assert!(script.contains("data-ws-text=\"count\""));
         assert!(script.contains("(event) => { signals.count.set"));
+    }
+
+    #[test]
+    fn js_literal_serializes_arrays() {
+        let value = Value::Array {
+            element_type: "Todo".to_string(),
+            values: vec![Value::Object(BTreeMap::from([
+                ("id".to_string(), Value::Int(1)),
+                ("title".to_string(), Value::String("Ship".to_string())),
+                ("done".to_string(), Value::Bool(false)),
+            ]))],
+        };
+        let literal = js_literal(&value);
+        assert!(literal.contains("\"title\":\"Ship\""));
+        assert!(literal.starts_with('['));
     }
 
     #[test]
@@ -1543,6 +1566,7 @@ mod tests {
             value_bindings: Vec::new(),
             html_bindings: Vec::new(),
             if_bindings: Vec::new(),
+            bootstrap: None,
         };
 
         let script = render_island_script(&manifest);

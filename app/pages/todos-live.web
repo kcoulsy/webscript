@@ -1,7 +1,7 @@
 @page "/todos/live"
 
-@action listTodos {
-  return await Todo.all()
+@load {
+  todos: Todo[] = await Todo.all()
 }
 
 @action addTodo(input: AddTodoInput) {
@@ -23,8 +23,8 @@
   <h1>Live todos</h1>
   <p>
   Client island state updates after server <code>@action</code> calls — no full page reload.
-  Compare with the <a href="/todos">classic form-based todos page</a>.
+  Initial list comes from <code>@load</code>. Compare with the <a href="/todos">classic form-based todos page</a>.
   </p>
 
-  <TodoListLive />
+  <TodoListLive initialTodos={todos} />
 </main>

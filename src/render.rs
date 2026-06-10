@@ -1,8 +1,7 @@
 use crate::client::{
     build_event_handler, compile_handler_body, handler_body_is_async, index_event_attributes,
-    resolve_signal_initial,
-    value_signal_from_field_handler, HandlerCompileContext, IfBinding, IslandManifest,
-    NamedHandler, SignalBinding, TextBinding, ValueBinding,
+    js_literal, resolve_signal_initial, value_signal_from_field_handler, HandlerCompileContext,
+    IfBinding, IslandManifest, NamedHandler, SignalBinding, TextBinding, ValueBinding,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
@@ -1203,6 +1202,11 @@ fn render_client_component(
         });
     }
 
+    let bootstrap = component_scope
+        .get("initialTodos")
+        .filter(|_| handler_names.contains("applyTodos"))
+        .map(|value| format!("handlers.applyTodos({})", js_literal(value)));
+
     let mut manifest = IslandManifest {
         id: island_id.clone(),
         component: call.name.clone(),
@@ -1214,6 +1218,7 @@ fn render_client_component(
         value_bindings: Vec::new(),
         html_bindings: Vec::new(),
         if_bindings: Vec::new(),
+        bootstrap,
     };
 
     let mut island_state = IslandBuildState {
