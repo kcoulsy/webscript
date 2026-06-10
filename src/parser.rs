@@ -19,8 +19,41 @@ fn parse_diagnostic_line(line: usize, message: impl Into<String>) -> Diagnostic 
 pub struct WebFile {
     pub route: Option<RoutePattern>,
     pub component: Option<ComponentDecl>,
+    pub actions: Vec<ActionDecl>,
     pub lets: Vec<LetDecl>,
     pub template: Vec<TemplateNode>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ActionDecl {
+    pub name: String,
+    pub statements: Vec<ActionStatement>,
+}
+
+#[derive(Debug, Clone)]
+pub enum ActionStatement {
+    If {
+        condition: expr::Expr,
+        statements: Vec<ActionStatement>,
+        line: usize,
+        column: usize,
+    },
+    SetSession {
+        field: String,
+        value: expr::Expr,
+        line: usize,
+        column: usize,
+    },
+    Fail {
+        message: String,
+        line: usize,
+        column: usize,
+    },
+    Redirect {
+        target: String,
+        line: usize,
+        column: usize,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -198,6 +231,7 @@ fn sample_value(type_name: &str) -> Option<Value> {
 pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
     let mut route = None;
     let mut component = None;
+    let mut actions = Vec::new();
     let mut lets = Vec::new();
     let mut template_start = None;
     let lines: Vec<&str> = source.lines().collect();
@@ -236,6 +270,11 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
             continue;
         }
 
+        if trimmed.starts_with("@action") {
+            actions.push(parse_action(&lines, &mut line_index)?);
+            continue;
+        }
+
         if trimmed.starts_with("@let") {
             let declaration = collect_balanced_line(&lines, &mut line_index, trimmed)?;
             lets.push(parse_let(&declaration, line_number)?);
@@ -264,6 +303,7 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
     Ok(WebFile {
         route,
         component,
+        actions,
         lets,
         template,
     })
@@ -390,6 +430,180 @@ fn parse_component(lines: &[&str], cursor: &mut usize) -> Result<ComponentDecl, 
     Err(parse_diagnostic_line(
         line_number,
         "unclosed @component block",
+    ))
+}
+
+fn parse_action(lines: &[&str], cursor: &mut usize) -> Result<ActionDecl, Diagnostic> {
+    let line_number = *cursor + 1;
+    let trimmed = lines[*cursor].trim();
+    let header = trimmed
+        .strip_prefix("@action")
+        .expect("@action prefix already checked")
+        .trim();
+    let name = header
+        .strip_suffix('{')
+        .ok_or_else(|| parse_diagnostic_line(line_number, "@action expects `@action name {`"))?
+        .trim();
+
+    if !is_identifier(name) {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("invalid action name `{name}`"),
+        ));
+    }
+
+    *cursor += 1;
+    let statements = parse_action_statements(lines, cursor, line_number)?;
+    if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
+        return Err(parse_diagnostic_line(line_number, "unclosed @action block"));
+    }
+    *cursor += 1;
+
+    Ok(ActionDecl {
+        name: name.to_string(),
+        statements,
+    })
+}
+
+fn parse_action_statements(
+    lines: &[&str],
+    cursor: &mut usize,
+    block_line: usize,
+) -> Result<Vec<ActionStatement>, Diagnostic> {
+    let mut statements = Vec::new();
+
+    while *cursor < lines.len() {
+        let statement_line = *cursor + 1;
+        let raw_statement = lines[*cursor];
+        let trimmed = raw_statement.trim();
+
+        if trimmed == "}" {
+            return Ok(statements);
+        }
+        if trimmed.is_empty() {
+            *cursor += 1;
+            continue;
+        }
+
+        statements.push(parse_action_statement(
+            lines,
+            cursor,
+            raw_statement,
+            trimmed,
+            statement_line,
+        )?);
+    }
+
+    Err(parse_diagnostic_line(block_line, "unclosed action block"))
+}
+
+fn parse_action_statement(
+    lines: &[&str],
+    cursor: &mut usize,
+    raw_line: &str,
+    trimmed: &str,
+    line_number: usize,
+) -> Result<ActionStatement, Diagnostic> {
+    if trimmed.starts_with("if ") {
+        let condition_source = trimmed
+            .strip_prefix("if")
+            .expect("if prefix already checked")
+            .trim()
+            .strip_suffix('{')
+            .ok_or_else(|| {
+                parse_diagnostic_line(line_number, "action if expects `if condition {`")
+            })?
+            .trim();
+        let column = raw_line
+            .find(condition_source)
+            .map(|index| index + 1)
+            .unwrap_or(1);
+        let condition = expr::parse(condition_source, line_number, column)?;
+        *cursor += 1;
+        let statements = parse_action_statements(lines, cursor, line_number)?;
+        if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
+            return Err(parse_diagnostic_line(
+                line_number,
+                "unclosed action if block",
+            ));
+        }
+        *cursor += 1;
+        return Ok(ActionStatement::If {
+            condition,
+            statements,
+            line: line_number,
+            column,
+        });
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("session.") {
+        let (field, value_source) = rest.split_once('=').ok_or_else(|| {
+            parse_diagnostic_line(
+                line_number,
+                "session action statements use `session.name = value`",
+            )
+        })?;
+        let field = field.trim();
+        if !is_identifier(field) {
+            return Err(parse_diagnostic_line(
+                line_number,
+                format!("invalid session field `{field}`"),
+            ));
+        }
+
+        let value_source = value_source.trim();
+        let column = raw_line
+            .find(value_source)
+            .map(|index| index + 1)
+            .unwrap_or(1);
+        *cursor += 1;
+        return Ok(ActionStatement::SetSession {
+            field: field.to_string(),
+            value: expr::parse(value_source, line_number, column)?,
+            line: line_number,
+            column,
+        });
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("fail(") {
+        let message_source = rest.strip_suffix(')').ok_or_else(|| {
+            parse_diagnostic_line(line_number, "fail statements use `fail(\"message\")`")
+        })?;
+        let message = parse_quoted(message_source).ok_or_else(|| {
+            parse_diagnostic_line(line_number, "fail message must be a quoted string")
+        })?;
+        let column = raw_line.find("fail").map(|index| index + 1).unwrap_or(1);
+        *cursor += 1;
+        return Ok(ActionStatement::Fail {
+            message,
+            line: line_number,
+            column,
+        });
+    }
+
+    if let Some(rest) = trimmed.strip_prefix("redirect(") {
+        let target_source = rest.strip_suffix(')').ok_or_else(|| {
+            parse_diagnostic_line(line_number, "redirect statements use `redirect(\"/path\")`")
+        })?;
+        let target = parse_quoted(target_source).ok_or_else(|| {
+            parse_diagnostic_line(line_number, "redirect target must be a quoted path")
+        })?;
+        let column = raw_line
+            .find("redirect")
+            .map(|index| index + 1)
+            .unwrap_or(1);
+        *cursor += 1;
+        return Ok(ActionStatement::Redirect {
+            target,
+            line: line_number,
+            column,
+        });
+    }
+
+    *cursor += 1;
+    Err(parse_diagnostic_line(
+        line_number,
+        format!("unsupported action statement `{trimmed}`"),
     ))
 }
 
@@ -1226,6 +1440,17 @@ mod tests {
             LetValue::Expr(expr::Expr::Literal(Value::Array { element_type, values }))
                 if element_type == "object" && values.len() == 2
         ));
+    }
+
+    #[test]
+    fn parses_action_blocks() {
+        let parsed = parse(
+            "@page \"/\"\n\n@action increment {\n  if input.name == \"\" {\n    fail(\"Name is required\")\n  }\n  session.count = session.count + 1\n  redirect(\"/\")\n}\n\n<p>{session.count}</p>",
+        )
+        .expect("valid page");
+
+        assert_eq!(parsed.actions[0].name, "increment");
+        assert_eq!(parsed.actions[0].statements.len(), 3);
     }
 
     #[test]

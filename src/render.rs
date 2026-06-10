@@ -1,8 +1,8 @@
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
 use crate::parser::{
-    ComponentCall, ComponentProp, LetDecl, LetValue, PropValue, SourceExpr, TemplateNode, Value,
-    WebFile,
+    ActionStatement, ComponentCall, ComponentProp, LetDecl, LetValue, PropValue, SourceExpr,
+    TemplateNode, Value, WebFile,
 };
 use std::collections::BTreeMap;
 
@@ -31,8 +31,116 @@ pub fn validate_with_components(file: &WebFile, components: &ComponentRegistry) 
     diagnostics
 }
 
+pub enum ActionOutcome {
+    Redirect(String),
+    Fail(String),
+}
+
+pub fn execute_action(
+    file: &WebFile,
+    action_name: &str,
+    params: &Scope,
+    input: &Scope,
+    session: &mut BTreeMap<String, Value>,
+) -> Result<ActionOutcome, Diagnostic> {
+    let action = file
+        .actions
+        .iter()
+        .find(|action| action.name == action_name)
+        .ok_or_else(|| {
+            Diagnostic::error(
+                Span::identifier(1, 1, action_name),
+                format!("unknown action `{action_name}`"),
+                None,
+            )
+        })?;
+    let mut scope = Scope::new();
+    for (name, value) in params {
+        scope.insert(name.clone(), value.clone());
+    }
+    scope.insert("input".to_string(), Value::Object(input.clone()));
+    scope.insert("session".to_string(), Value::Object(session.clone()));
+
+    Ok(
+        execute_action_statements(&action.statements, &mut scope, session)?
+            .unwrap_or_else(|| ActionOutcome::Redirect(".".to_string())),
+    )
+}
+
+fn execute_action_statements(
+    statements: &[ActionStatement],
+    scope: &mut Scope,
+    session: &mut BTreeMap<String, Value>,
+) -> Result<Option<ActionOutcome>, Diagnostic> {
+    for statement in statements {
+        match statement {
+            ActionStatement::If {
+                condition,
+                statements,
+                line,
+                column,
+            } => {
+                let value = expr::evaluate(condition, scope, *line, *column)?;
+                let Some(condition_value) = value.as_bool() else {
+                    return Err(Diagnostic::error(
+                        Span::at(*line, *column),
+                        "action if condition must be bool",
+                        Some(format!("found `{}`", value.type_name())),
+                    ));
+                };
+                if condition_value {
+                    if let Some(outcome) = execute_action_statements(statements, scope, session)? {
+                        return Ok(Some(outcome));
+                    }
+                }
+            }
+            ActionStatement::SetSession {
+                field,
+                value,
+                line,
+                column,
+            } => {
+                let value = expr::evaluate(value, scope, *line, *column)?;
+                session.insert(field.clone(), value.clone());
+                scope.insert("session".to_string(), Value::Object(session.clone()));
+            }
+            ActionStatement::Fail {
+                message,
+                line,
+                column,
+            } => {
+                if message.is_empty() {
+                    return Err(Diagnostic::error(
+                        Span::at(*line, *column),
+                        "fail message cannot be empty",
+                        None,
+                    ));
+                }
+                return Ok(Some(ActionOutcome::Fail(message.clone())));
+            }
+            ActionStatement::Redirect {
+                target,
+                line,
+                column,
+            } => {
+                if target.is_empty() {
+                    return Err(Diagnostic::error(
+                        Span::at(*line, *column),
+                        "redirect target cannot be empty",
+                        None,
+                    ));
+                }
+                return Ok(Some(ActionOutcome::Redirect(target.clone())));
+            }
+        }
+    }
+
+    Ok(None)
+}
+
 fn base_scope_for(file: &WebFile, params: &Scope) -> Scope {
     let mut scope = Scope::new();
+    scope.insert("session".to_string(), default_session_value());
 
     if let Some(route) = &file.route {
         for param in &route.params {
@@ -54,6 +162,13 @@ fn base_scope_for(file: &WebFile, params: &Scope) -> Scope {
     }
 
     scope
+}
+
+fn default_session_value() -> Value {
+    let mut fields = BTreeMap::new();
+    fields.insert("count".to_string(), Value::Int(0));
+    fields.insert("name".to_string(), Value::String(String::new()));
+    Value::Object(fields)
 }
 
 fn scope_for(file: &WebFile, params: &Scope) -> Result<Scope, Diagnostic> {
@@ -600,6 +715,76 @@ mod tests {
             render_with_components(&file, &Scope::new(), &components).expect("rendered"),
             "<h1>Ada</h1>\n<article>Intro:true</article><article>Launch:false</article>"
         );
+    }
+
+    #[test]
+    fn executes_action_and_mutates_session() {
+        let file = parse(
+            "@page \"/\"\n\n@action increment {\n  session.count = session.count + 1\n  redirect(\"/\")\n}\n\n<p>{session.count}</p>",
+        )
+        .expect("valid page");
+        let mut session = Scope::new();
+        session.insert("count".to_string(), crate::parser::Value::Int(1));
+
+        let outcome = super::execute_action(
+            &file,
+            "increment",
+            &Scope::new(),
+            &Scope::new(),
+            &mut session,
+        )
+        .expect("action");
+
+        assert!(matches!(outcome, super::ActionOutcome::Redirect(target) if target == "/"));
+        assert!(matches!(
+            session.get("count"),
+            Some(crate::parser::Value::Int(2))
+        ));
+    }
+
+    #[test]
+    fn executes_action_with_form_input_object() {
+        let file = parse(
+            "@page \"/\"\n\n@action rememberName {\n  session.name = input.name\n  redirect(\"/\")\n}\n\n<p>{session.name}</p>",
+        )
+        .expect("valid page");
+        let mut input = Scope::new();
+        input.insert(
+            "name".to_string(),
+            crate::parser::Value::String("Ada".to_string()),
+        );
+        let mut session = Scope::new();
+
+        super::execute_action(&file, "rememberName", &Scope::new(), &input, &mut session)
+            .expect("action");
+
+        assert!(matches!(
+            session.get("name"),
+            Some(crate::parser::Value::String(name)) if name == "Ada"
+        ));
+    }
+
+    #[test]
+    fn executes_action_failures_inside_if_blocks() {
+        let file = parse(
+            "@page \"/\"\n\n@action rememberName {\n  if input.name == \"\" {\n    fail(\"Name is required\")\n  }\n  session.name = input.name\n  redirect(\"/\")\n}\n\n<p>{session.name}</p>",
+        )
+        .expect("valid page");
+        let mut input = Scope::new();
+        input.insert(
+            "name".to_string(),
+            crate::parser::Value::String(String::new()),
+        );
+        let mut session = Scope::new();
+
+        let outcome =
+            super::execute_action(&file, "rememberName", &Scope::new(), &input, &mut session)
+                .expect("action");
+
+        assert!(
+            matches!(outcome, super::ActionOutcome::Fail(message) if message == "Name is required")
+        );
+        assert!(!session.contains_key("name"));
     }
 
     #[test]

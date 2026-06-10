@@ -40,6 +40,19 @@ Session data lives in a server-side store:
 }
 ```
 
+MVP note: the local Rust dev runtime currently provides a tiny in-memory session store. New sessions get a `webscript_session` HttpOnly cookie and expose a `session` object in markup and actions:
+
+```web
+<p>{session.count}</p>
+
+@action increment {
+  session.count = session.count + 1
+  redirect("/")
+}
+```
+
+This is intentionally not the final auth system: the cookie is not signed yet, sessions reset when the dev server restarts, and typed `@session` declarations are still future work.
+
 ## Stateful Session Mode
 
 ```web
@@ -205,4 +218,3 @@ The language/runtime handles:
 - TTL refresh
 - Logout invalidation
 - Role and permission guards
-

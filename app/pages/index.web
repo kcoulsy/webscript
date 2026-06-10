@@ -15,10 +15,34 @@
   { title: "Roadmap", slug: "roadmap", featured: false }
 ]
 
+@action increment {
+  session.count = session.count + 1
+  redirect("/")
+}
+
+@action rememberName {
+  if input.name == "" {
+    fail("Name is required")
+  }
+  session.name = input.name
+  redirect("/")
+}
+
 <main>
   <h1>{greeting}</h1>
   <p>Author: {author.name} ({author.role})</p>
   <p>Visit count: {visits + 1}</p>
+  <p>Session count: {session.count}</p>
+  <p>Remembered name: {session.name}</p>
+  <form method="post" action="/">
+    <input type="hidden" name="_action" value="increment" />
+    <button>Increment session</button>
+  </form>
+  <form method="post" action="/">
+    <input type="hidden" name="_action" value="rememberName" />
+    <input name="name" value={session.name} />
+    <button>Remember name</button>
+  </form>
 
   @if ready && !false {
     <p>The expression engine is running this page directly from app/pages/index.web.</p>

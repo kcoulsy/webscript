@@ -63,6 +63,50 @@ Actions can be submitted from forms:
 </form>
 ```
 
+The current MVP supports a small server-rendered form slice. A page can declare an action block, submit a POST form with `_action`, mutate session fields, and redirect:
+
+```web
+@page "/"
+
+@action increment {
+  session.count = session.count + 1
+  redirect("/")
+}
+
+<p>Session count: {session.count}</p>
+<form method="post" action="/">
+  <input type="hidden" name="_action" value="increment" />
+  <button>Increment</button>
+</form>
+```
+
+Submitted form fields are exposed as strings on `input`:
+
+```web
+@action rememberName {
+  if input.name == "" {
+    fail("Name is required")
+  }
+  session.name = input.name
+  redirect("/")
+}
+
+<form method="post" action="/">
+  <input type="hidden" name="_action" value="rememberName" />
+  <input name="name" value={session.name} />
+  <button>Remember</button>
+</form>
+```
+
+Action statements supported today:
+
+- `if condition { ... }`
+- `session.name = expression`
+- `fail("message")`
+- `redirect("/path")`
+
+The dev runtime stores sessions in memory and sends a `webscript_session` HttpOnly cookie.
+
 ## Action Inputs
 
 Inputs should be typed:
@@ -172,4 +216,3 @@ For payments, webhooks, and retryable forms, actions should support idempotency 
   return ok(result)
 }
 ```
-
