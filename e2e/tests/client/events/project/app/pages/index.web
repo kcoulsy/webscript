@@ -1,0 +1,6 @@
+@page "/"
+
+<main>
+  <h1>Events demo</h1>
+  <EventDemo />
+</main>

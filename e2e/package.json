@@ -1,0 +1,16 @@
+{
+  "name": "@webscript/e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "playwright test -c runner/playwright.config.ts",
+    "test:headed": "playwright test -c runner/playwright.config.ts --headed",
+    "test:external": "cross-env E2E_SKIP_SERVER=1 playwright test -c runner/playwright.config.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.52.0",
+    "@types/node": "^22.15.0",
+    "cross-env": "^7.0.3",
+    "typescript": "^5.8.3"
+  }
+}

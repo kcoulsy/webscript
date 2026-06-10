@@ -1,0 +1,6 @@
+@page "/"
+
+<main>
+  <h1>Greeting demo</h1>
+  <Greeting placeholder="Type your name" />
+</main>

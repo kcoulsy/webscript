@@ -1,0 +1,16 @@
+@page "/"
+
+@action increment {
+  session.count = session.count + 1
+  redirect("/")
+}
+
+<main>
+  <h1>Session demo</h1>
+  <p>Session count: {session.count}</p>
+
+  <form method="post" action="/">
+    <input type="hidden" name="_action" value="increment" />
+    <button type="submit">Increment session</button>
+  </form>
+</main>

@@ -1,0 +1,22 @@
+@page "/fetch-demo"
+
+@load {
+  title: string = ""
+  completed: bool = false
+  error: string = ""
+
+  try {
+    todo: JsonPlaceholderTodo = await fetch("https://jsonplaceholder.typicode.com/todos/1", JsonPlaceholderTodo)
+    title = todo.title
+    completed = todo.completed
+  } catch err {
+    error = err.message
+  }
+}
+
+<main>
+  <h1>Fetch demo</h1>
+  <p>Title: {title}</p>
+  <p>Completed: {completed}</p>
+  <p>Error: {error}</p>
+</main>

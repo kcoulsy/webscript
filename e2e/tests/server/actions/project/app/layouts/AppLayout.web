@@ -1,0 +1,6 @@
+@layout AppLayout {
+}
+
+<main class="app-layout">
+  <slot />
+</main>

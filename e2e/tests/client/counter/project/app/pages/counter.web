@@ -1,0 +1,7 @@
+@page "/counter"
+
+<main>
+  <h1>Counter demo</h1>
+  <Counter initial={5} label="Score" />
+  <Counter initial={0} label="Lives" />
+</main>

@@ -1,0 +1,18 @@
+@component Details {
+  title: string = "Details"
+}
+
+@client {
+  open: signal<bool> = false
+}
+
+<section class="details">
+  <button type="button" @click={open = !open}>Toggle {title}</button>
+
+  @if open {
+    <div class="details-panel">
+      <h3>{title}</h3>
+      <p>Content loaded on the server, toggled in the browser.</p>
+    </div>
+  }
+</section>

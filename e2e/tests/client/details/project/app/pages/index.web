@@ -1,0 +1,6 @@
+@page "/"
+
+<main>
+  <h1>Details demo</h1>
+  <Details title="Release notes" />
+</main>

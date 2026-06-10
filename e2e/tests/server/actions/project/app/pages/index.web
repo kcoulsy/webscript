@@ -1,0 +1,51 @@
+@page "/"
+
+@action increment {
+  session.count = session.count + 1
+  redirect("/")
+}
+
+@action rememberName {
+  if input.name == "" {
+    fail("Name is required")
+  }
+  session.name = input.name
+  redirect("/")
+}
+
+@action validateWithWhile {
+  attempts := 0
+  while attempts < 3 && input.name == "" {
+    attempts = attempts + 1
+  }
+  if input.name == "" {
+    fail("Name still required after " + attempts + " checks")
+  }
+  session.name = input.name
+  redirect("/")
+}
+
+<main>
+  <h1>Actions demo</h1>
+  <p>Session count: {session.count}</p>
+  <p>Remembered name: {session.name}</p>
+
+  <form method="post" action="/">
+    <input type="hidden" name="_action" value="increment" />
+    <button type="submit">Increment session</button>
+  </form>
+
+  <form method="post" action="/">
+    <input type="hidden" name="_action" value="rememberName" />
+    <label for="home-name">Name</label>
+    <input id="home-name" name="name" value={session.name} />
+    <button type="submit">Remember name</button>
+  </form>
+
+  <form method="post" action="/">
+    <input type="hidden" name="_action" value="validateWithWhile" />
+    <label for="home-name-while">Name</label>
+    <input id="home-name-while" name="name" value={session.name} />
+    <button type="submit">Remember with while validation</button>
+  </form>
+</main>

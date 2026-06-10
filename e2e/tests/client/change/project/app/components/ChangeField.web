@@ -1,0 +1,13 @@
+@component ChangeField {}
+
+@client {
+  value: signal<string> = ""
+}
+
+<div>
+  <select id="change-field" @change={|event| value = event.target.value}>
+    <option value="">Pick one</option>
+    <option value="draft">Draft</option>
+  </select>
+  <span data-testid="output">{value}</span>
+</div>

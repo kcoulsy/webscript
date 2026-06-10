@@ -1,0 +1,32 @@
+@component EventDemo {}
+
+@client {
+  status: signal<string> = "idle"
+  submitted: signal<bool> = false
+  keyCount: signal<int> = 0
+
+  fn save() {
+    submitted = true
+    status = "Saved"
+  }
+}
+
+<div class="event-demo">
+  <form @submit.prevent={|event| save()} class="form-stack">
+    <button type="submit">Save (@submit.prevent)</button>
+  </form>
+
+  @if submitted {
+    <p class="event-success">{status}</p>
+  }
+
+  <input
+    id="event-keys"
+    placeholder="Type here — watch key count"
+    @keydown={|event| { keyCount = keyCount + 1; event.key == "Enter" && save() }}
+    @focus={|event| status = "focused"}
+    @blur={status = "blurred"}
+  />
+  <p class="event-meta">Keys pressed: {keyCount}</p>
+  <p class="event-meta">Status: {status}</p>
+</div>
