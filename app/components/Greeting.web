@@ -1,0 +1,15 @@
+@component Greeting {
+  placeholder: string = "Your name"
+}
+
+@client {
+  name: signal<string> = ""
+}
+
+<div class="greeting">
+  <label>
+    Name
+    <input @input={name = event.value} value={name} placeholder={placeholder} />
+  </label>
+  <p>Hello, {name}!</p>
+</div>

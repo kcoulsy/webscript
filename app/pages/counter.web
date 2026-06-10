@@ -1,6 +1,28 @@
 @page "/counter"
 
 <main>
-  <h1>Counter Island</h1>
-  <Counter initial={5} />
+  <h1>Client Interactivity Demo</h1>
+  <p>These islands hydrate in the browser with signals. No bundler required.</p>
+
+  <section>
+    <h2>Counter</h2>
+    <Counter initial={5} label="Score" />
+    <Counter initial={0} label="Lives" />
+  </section>
+
+  <section>
+    <h2>Toggle panel</h2>
+    <Details title="Release notes" />
+  </section>
+
+  <section>
+    <h2>Live greeting</h2>
+    <Greeting placeholder="Type your name" />
+  </section>
+
+  <section>
+    <h2>Forms &amp; events</h2>
+    <p>Submit, change, keydown, focus, blur, named handlers, and <code>.prevent</code> modifiers.</p>
+    <EventDemo />
+  </section>
 </main>

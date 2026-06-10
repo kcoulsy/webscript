@@ -20,6 +20,8 @@ fn parse_diagnostic_line(line: usize, message: impl Into<String>) -> Diagnostic 
 pub struct WebFile {
     pub route: Option<RoutePattern>,
     pub component: Option<ComponentDecl>,
+    pub layout: Option<ComponentDecl>,
+    pub layout_use: Option<LayoutUse>,
     pub client: Option<ClientBlock>,
     pub load: Option<ServerBlock>,
     pub actions: Vec<ActionDecl>,
@@ -27,9 +29,27 @@ pub struct WebFile {
     pub template: Vec<TemplateNode>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LayoutUse {
+    None,
+    Apply {
+        name: String,
+        props: Vec<ComponentProp>,
+        line: usize,
+    },
+}
+
 #[derive(Debug, Clone)]
 pub struct ClientBlock {
     pub signals: Vec<ClientSignalDecl>,
+    pub handlers: Vec<ClientHandlerDecl>,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientHandlerDecl {
+    pub name: String,
+    pub body: String,
     pub line: usize,
 }
 
@@ -53,6 +73,8 @@ pub struct EventBinding {
     pub handler_source: String,
     pub line: usize,
     pub column: usize,
+    pub prevent_default: bool,
+    pub stop_propagation: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -127,6 +149,7 @@ pub enum TemplateNode {
         line: usize,
     },
     EventBinding(EventBinding),
+    Slot,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -271,6 +294,8 @@ fn sample_value(type_name: &str) -> Option<Value> {
 pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
     let mut route = None;
     let mut component = None;
+    let mut layout = None;
+    let mut layout_use = None;
     let mut client = None;
     let mut load = None;
     let mut actions = Vec::new();
@@ -290,10 +315,10 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
         }
 
         if trimmed.starts_with("@page") {
-            if component.is_some() {
+            if component.is_some() || layout.is_some() {
                 return Err(parse_diagnostic_line(
                     line_number,
-                    "@page cannot be combined with @component",
+                    "@page cannot be combined with @component or @layout",
                 ));
             }
             route = Some(parse_page(trimmed, line_number)?);
@@ -301,11 +326,37 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
             continue;
         }
 
-        if trimmed.starts_with("@component") {
+        if trimmed.starts_with("@layout") {
+            if trimmed == "@layout none" {
+                if route.is_none() {
+                    return Err(parse_diagnostic_line(
+                        line_number,
+                        "@layout none can only be used on pages",
+                    ));
+                }
+                layout_use = Some(LayoutUse::None);
+                line_index += 1;
+                continue;
+            }
             if route.is_some() {
+                layout_use = Some(parse_layout_use(&lines, &mut line_index)?);
+                continue;
+            }
+            if component.is_some() {
                 return Err(parse_diagnostic_line(
                     line_number,
-                    "@component cannot be combined with @page",
+                    "@layout cannot be combined with @component",
+                ));
+            }
+            layout = Some(parse_layout(&lines, &mut line_index)?);
+            continue;
+        }
+
+        if trimmed.starts_with("@component") {
+            if route.is_some() || layout.is_some() {
+                return Err(parse_diagnostic_line(
+                    line_number,
+                    "@component cannot be combined with @page or @layout",
                 ));
             }
             component = Some(parse_component(&lines, &mut line_index)?);
@@ -343,10 +394,10 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
         break;
     }
 
-    if route.is_none() && component.is_none() {
+    if route.is_none() && component.is_none() && layout.is_none() {
         return Err(parse_diagnostic_line(
             1,
-            "missing @page or @component directive",
+            "missing @page, @component, or @layout directive",
         ));
     }
 
@@ -361,6 +412,8 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
     Ok(WebFile {
         route,
         component,
+        layout,
+        layout_use,
         client,
         load,
         actions,
@@ -416,7 +469,7 @@ fn parse_nodes(
             continue;
         }
 
-        if trimmed.starts_with('@') {
+        if trimmed.starts_with('@') && parse_event_directive(trimmed).is_none() {
             let col = raw_line.find('@').map(|index| index + 1).unwrap_or(1);
             return Err(parse_diagnostic(
                 line_number,
@@ -424,6 +477,15 @@ fn parse_nodes(
                 col + trimmed.len(),
                 format!("unexpected directive `{trimmed}`"),
             ));
+        }
+
+        if is_slot_tag(trimmed) {
+            nodes.push(TemplateNode::Slot);
+            if *cursor + 1 < lines.len() && !is_block_close(lines[*cursor + 1].trim()) {
+                nodes.push(TemplateNode::Text("\n".to_string()));
+            }
+            *cursor += 1;
+            continue;
         }
 
         let component_line = if starts_component_call(trimmed) && !trimmed.ends_with("/>") {
@@ -461,6 +523,20 @@ fn parse_component(lines: &[&str], cursor: &mut usize) -> Result<ComponentDecl, 
         .strip_prefix("@component")
         .expect("@component prefix already checked")
         .trim();
+    if let Some(name) = header.strip_suffix("{}") {
+        let name = name.trim();
+        if !is_component_name(name) {
+            return Err(parse_diagnostic_line(
+                line_number,
+                format!("invalid component name `{name}`"),
+            ));
+        }
+        *cursor += 1;
+        return Ok(ComponentDecl {
+            name: name.to_string(),
+            props: Vec::new(),
+        });
+    }
     let name = header.strip_suffix('{').ok_or_else(|| {
         parse_diagnostic_line(line_number, "@component expects `@component Name {`")
     })?;
@@ -501,6 +577,123 @@ fn parse_component(lines: &[&str], cursor: &mut usize) -> Result<ComponentDecl, 
     ))
 }
 
+fn parse_layout(lines: &[&str], cursor: &mut usize) -> Result<ComponentDecl, Diagnostic> {
+    let line_number = *cursor + 1;
+    let trimmed = lines[*cursor].trim();
+    let header = trimmed
+        .strip_prefix("@layout")
+        .expect("@layout prefix already checked")
+        .trim();
+    let name = header.strip_suffix('{').ok_or_else(|| {
+        parse_diagnostic_line(line_number, "@layout expects `@layout Name {`")
+    })?;
+    let name = name.trim();
+
+    if !is_component_name(name) {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("invalid layout name `{name}`"),
+        ));
+    }
+
+    *cursor += 1;
+    let mut props = Vec::new();
+
+    while *cursor < lines.len() {
+        let prop_line_number = *cursor + 1;
+        let trimmed = lines[*cursor].trim();
+        if trimmed == "}" {
+            *cursor += 1;
+            return Ok(ComponentDecl {
+                name: name.to_string(),
+                props,
+            });
+        }
+        if trimmed.is_empty() {
+            *cursor += 1;
+            continue;
+        }
+
+        props.push(parse_prop_decl(trimmed, prop_line_number)?);
+        *cursor += 1;
+    }
+
+    Err(parse_diagnostic_line(line_number, "unclosed @layout block"))
+}
+
+fn parse_layout_use(lines: &[&str], cursor: &mut usize) -> Result<LayoutUse, Diagnostic> {
+    let line_number = *cursor + 1;
+    let trimmed = lines[*cursor].trim();
+    let header = trimmed
+        .strip_prefix("@layout")
+        .expect("@layout prefix already checked")
+        .trim();
+    let name = header.strip_suffix('{').ok_or_else(|| {
+        parse_diagnostic_line(line_number, "@layout expects `@layout Name {`")
+    })?;
+    let name = name.trim();
+
+    if !is_component_name(name) {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("invalid layout name `{name}`"),
+        ));
+    }
+
+    *cursor += 1;
+    let mut props = Vec::new();
+
+    while *cursor < lines.len() {
+        let prop_line_number = *cursor + 1;
+        let trimmed = lines[*cursor].trim();
+        if trimmed == "}" {
+            *cursor += 1;
+            return Ok(LayoutUse::Apply {
+                name: name.to_string(),
+                props,
+                line: line_number,
+            });
+        }
+        if trimmed.is_empty() {
+            *cursor += 1;
+            continue;
+        }
+
+        props.push(parse_layout_use_prop(trimmed, prop_line_number)?);
+        *cursor += 1;
+    }
+
+    Err(parse_diagnostic_line(line_number, "unclosed @layout block"))
+}
+
+fn parse_layout_use_prop(line: &str, line_number: usize) -> Result<ComponentProp, Diagnostic> {
+    let (name, value_text) = line.split_once(':').ok_or_else(|| {
+        parse_diagnostic_line(
+            line_number,
+            "layout props use `name: value`",
+        )
+    })?;
+    let name = name.trim();
+    if !is_identifier(name) {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("invalid layout prop name `{name}`"),
+        ));
+    }
+
+    let value_text = value_text.trim();
+    let value_start_col = line.find(value_text).map(|index| index + 1).unwrap_or(1);
+    let (value, consumed) = parse_prop_value(value_text, line_number, value_start_col)?;
+    Ok(ComponentProp {
+        name: name.to_string(),
+        value,
+        line: line_number,
+        column: 1,
+        value_start_col,
+        value_end_col: value_start_col + consumed,
+    })
+}
+
 fn parse_client(lines: &[&str], cursor: &mut usize) -> Result<ClientBlock, Diagnostic> {
     let line_number = *cursor + 1;
     let trimmed = lines[*cursor].trim();
@@ -512,14 +705,16 @@ fn parse_client(lines: &[&str], cursor: &mut usize) -> Result<ClientBlock, Diagn
     }
     *cursor += 1;
     let mut signals = Vec::new();
+    let mut handlers = Vec::new();
 
     while *cursor < lines.len() {
-        let signal_line_number = *cursor + 1;
+        let item_line_number = *cursor + 1;
         let trimmed = lines[*cursor].trim();
         if trimmed == "}" {
             *cursor += 1;
             return Ok(ClientBlock {
                 signals,
+                handlers,
                 line: line_number,
             });
         }
@@ -528,11 +723,60 @@ fn parse_client(lines: &[&str], cursor: &mut usize) -> Result<ClientBlock, Diagn
             continue;
         }
 
-        signals.push(parse_client_signal(trimmed, signal_line_number)?);
+        if trimmed.starts_with("fn ") {
+            handlers.push(parse_client_handler(lines, cursor)?);
+            continue;
+        }
+
+        signals.push(parse_client_signal(trimmed, item_line_number)?);
         *cursor += 1;
     }
 
     Err(parse_diagnostic_line(line_number, "unclosed @client block"))
+}
+
+fn parse_client_handler(lines: &[&str], cursor: &mut usize) -> Result<ClientHandlerDecl, Diagnostic> {
+    let line_number = *cursor + 1;
+    let trimmed = lines[*cursor].trim();
+    let rest = trimmed
+        .strip_prefix("fn ")
+        .ok_or_else(|| parse_diagnostic_line(line_number, "client handler expects `fn name() {`"))?;
+    let (name_part, _) = rest
+        .split_once('{')
+        .ok_or_else(|| parse_diagnostic_line(line_number, "client handler expects `fn name() {`"))?;
+    let name_part = name_part.trim();
+    let name = name_part
+        .strip_suffix("()")
+        .ok_or_else(|| parse_diagnostic_line(line_number, "client handler expects `fn name() {`"))?
+        .trim();
+    if !is_identifier(name) {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("invalid client handler name `{name}`"),
+        ));
+    }
+
+    *cursor += 1;
+    let mut body_lines = Vec::new();
+    while *cursor < lines.len() {
+        let body_trimmed = lines[*cursor].trim();
+        if body_trimmed == "}" {
+            *cursor += 1;
+            return Ok(ClientHandlerDecl {
+                name: name.to_string(),
+                body: body_lines.join("\n"),
+                line: line_number,
+            });
+        }
+        if body_trimmed.is_empty() {
+            *cursor += 1;
+            continue;
+        }
+        body_lines.push(body_trimmed.to_string());
+        *cursor += 1;
+    }
+
+    Err(parse_diagnostic_line(line_number, "unclosed client handler block"))
 }
 
 fn parse_client_signal(line: &str, line_number: usize) -> Result<ClientSignalDecl, Diagnostic> {
@@ -561,14 +805,14 @@ fn parse_client_signal(line: &str, line_number: usize) -> Result<ClientSignalDec
     else {
         return Err(parse_diagnostic_line(
             line_number,
-            format!("`{type_part}` is not a supported signal type; use signal<int> or signal<bool>"),
+            format!("`{type_part}` is not a supported signal type; use signal<int>, signal<bool>, or signal<string>"),
         ));
     };
     let inner_type = inner_type.trim();
-    if inner_type != "int" && inner_type != "bool" {
+    if inner_type != "int" && inner_type != "bool" && inner_type != "string" {
         return Err(parse_diagnostic_line(
             line_number,
-            format!("unsupported signal type `{inner_type}`; use int or bool"),
+            format!("unsupported signal type `{inner_type}`; use int, bool, or string"),
         ));
     }
 
@@ -1119,6 +1363,43 @@ fn parse_if(
     })
 }
 
+const CLIENT_EVENTS: &[&str] = &[
+    "click", "input", "change", "submit", "keydown", "keyup", "focus", "blur",
+];
+
+fn parse_event_directive(rest: &str) -> Option<(String, bool, bool, usize)> {
+    let after_at = rest.strip_prefix('@')?;
+    for event in CLIENT_EVENTS {
+        let Some(suffix) = after_at.strip_prefix(event) else {
+            continue;
+        };
+        let mut prevent_default = false;
+        let mut stop_propagation = false;
+        let mut remainder = suffix;
+        loop {
+            if let Some(next) = remainder.strip_prefix(".prevent") {
+                prevent_default = true;
+                remainder = next;
+            } else if let Some(next) = remainder.strip_prefix(".stop") {
+                stop_propagation = true;
+                remainder = next;
+            } else {
+                break;
+            }
+        }
+        if remainder.starts_with('=') {
+            let consumed = rest.len() - remainder.len();
+            return Some((
+                event.to_string(),
+                prevent_default,
+                stop_propagation,
+                consumed,
+            ));
+        }
+    }
+    None
+}
+
 fn extract_event_bindings(
     line: &str,
     line_number: usize,
@@ -1127,24 +1408,32 @@ fn extract_event_bindings(
     let mut output = String::new();
     let mut offset = 0;
 
-    while let Some(relative) = line[offset..].find("@click") {
+    while offset < line.len() {
+        let Some(relative) = line[offset..]
+            .find('@')
+            .filter(|index| parse_event_directive(&line[offset + index..]).is_some())
+        else {
+            output.push_str(&line[offset..]);
+            break;
+        };
+
         let start = offset + relative;
         output.push_str(&line[offset..start]);
 
         let rest = &line[start..];
-        if !rest.starts_with("@click=") {
-            output.push_str("@click");
-            offset = start + 6;
-            continue;
-        }
+        let (event, prevent_default, stop_propagation, directive_len) =
+            parse_event_directive(rest).expect("matched client event prefix");
 
-        let brace_start = "@click=".len();
+        let mut brace_start = directive_len;
+        if rest.as_bytes().get(brace_start) == Some(&b'=') {
+            brace_start += 1;
+        }
         if rest.len() <= brace_start || rest.as_bytes()[brace_start] != b'{' {
             return Err(parse_diagnostic(
                 line_number,
                 start + 1,
                 start + rest.len().min(start + 20),
-                "@click expects `@click={handler}`",
+                format!("@{event} expects `@{event}={{handler}}`"),
             ));
         }
 
@@ -1170,29 +1459,76 @@ fn extract_event_bindings(
                 line_number,
                 start + 1,
                 line.len(),
-                "unclosed `@click` handler",
+                format!("unclosed `@{event}` handler"),
             ));
         };
 
         let handler_source = rest[handler_start..handler_end].trim().to_string();
         bindings.push(EventBinding {
-            event: "click".to_string(),
+            event,
             handler_source,
             line: line_number,
             column: start + 1,
+            prevent_default,
+            stop_propagation,
         });
 
-        output.push_str(" data-ws-click");
+        let event_name = bindings.last().expect("binding").event.clone();
+        output.push_str(&format!(" data-ws-{event_name}"));
         offset = start + handler_end + 1;
     }
 
-    output.push_str(&line[offset..]);
     Ok((output, bindings))
+}
+
+fn is_slot_tag(value: &str) -> bool {
+    matches!(value.trim(), "<slot />" | "<slot/>")
 }
 
 fn parse_text_line(line: &str, line_number: usize) -> Result<Vec<TemplateNode>, Diagnostic> {
     let (line, event_bindings) = extract_event_bindings(line, line_number)?;
 
+    let mut nodes = Vec::new();
+    let mut offset = 0;
+
+    while offset < line.len() {
+        let Some(slot_start) = line[offset..].find("<slot").filter(|index| {
+            let rest = &line[offset + index..];
+            rest.starts_with("<slot />") || rest.starts_with("<slot/>")
+        }) else {
+            break;
+        };
+
+        let absolute_start = offset + slot_start;
+        if absolute_start > offset {
+            nodes.push(TemplateNode::Text(line[offset..absolute_start].to_string()));
+        }
+
+        let slot_len = if line[absolute_start..].starts_with("<slot />") {
+            8
+        } else {
+            7
+        };
+        nodes.push(TemplateNode::Slot);
+        offset = absolute_start + slot_len;
+    }
+
+    if offset < line.len() {
+        let remainder = &line[offset..];
+        offset = line.len();
+        nodes.extend(parse_text_expressions(remainder, line_number)?);
+    } else if nodes.is_empty() {
+        nodes.extend(parse_text_expressions(&line, line_number)?);
+    }
+
+    for binding in event_bindings {
+        nodes.push(TemplateNode::EventBinding(binding));
+    }
+
+    Ok(nodes)
+}
+
+fn parse_text_expressions(line: &str, line_number: usize) -> Result<Vec<TemplateNode>, Diagnostic> {
     let mut nodes = Vec::new();
     let mut offset = 0;
 
@@ -1205,9 +1541,6 @@ fn parse_text_line(line: &str, line_number: usize) -> Result<Vec<TemplateNode>, 
         let expr_start = absolute_start + 1;
         let Some(end) = line[expr_start..].find('}') else {
             nodes.push(TemplateNode::Text(line[absolute_start..].to_string()));
-            for binding in event_bindings {
-                nodes.push(TemplateNode::EventBinding(binding));
-            }
             return Ok(nodes);
         };
 
@@ -1240,10 +1573,6 @@ fn parse_text_line(line: &str, line_number: usize) -> Result<Vec<TemplateNode>, 
 
     if offset < line.len() {
         nodes.push(TemplateNode::Text(line[offset..].to_string()));
-    }
-
-    for binding in event_bindings {
-        nodes.push(TemplateNode::EventBinding(binding));
     }
 
     Ok(nodes)
@@ -1633,7 +1962,7 @@ mod tests {
     #[test]
     fn rejects_missing_page() {
         let error = parse("<h1>No route</h1>").expect_err("missing page should fail");
-        assert_eq!(error.message, "missing @page or @component directive");
+        assert_eq!(error.message, "missing @page, @component, or @layout directive");
         assert_eq!(error.span.line, 1);
     }
 
@@ -1678,6 +2007,24 @@ mod tests {
 
         assert_eq!(error.message, "unexpected directive `@wat`");
         assert_eq!(error.span.line, 3);
+    }
+
+    #[test]
+    fn parse_event_directive_finds_brace_after_equals() {
+        let (_, _, _, directive_len) =
+            super::parse_event_directive("@click={count++}").expect("click directive");
+        let rest = "@click={count++}";
+        assert_eq!(directive_len, 6);
+        assert_eq!(rest.as_bytes()[directive_len + 1], b'{');
+    }
+
+    #[test]
+    fn parse_event_directive_supports_prevent_modifier() {
+        let (event, prevent, stop, _) =
+            super::parse_event_directive("@submit.prevent={save}").expect("submit directive");
+        assert_eq!(event, "submit");
+        assert!(prevent);
+        assert!(!stop);
     }
 
     #[test]

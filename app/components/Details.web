@@ -1,0 +1,23 @@
+@component Details {
+  title: string = "Details"
+}
+
+@client {
+  open: signal<bool> = false
+}
+
+<section class="details">
+  <button @click={open = !open}>
+    @if open {
+      Hide {title}
+    } @else {
+      Show {title}
+    }
+  </button>
+
+  @if open {
+    <div class="details-panel">
+      <p>{title} content loaded on the server, toggled in the browser.</p>
+    </div>
+  }
+</section>

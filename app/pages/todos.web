@@ -64,8 +64,4 @@
   } @else {
     <p>No todos yet. Add one above.</p>
   }
-
-  <nav>
-    <a href="/">Home</a>
-  </nav>
 </main>

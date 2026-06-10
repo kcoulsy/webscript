@@ -1,0 +1,37 @@
+@component EventDemo {}
+
+@client {
+  note: signal<string> = ""
+  status: signal<string> = "idle"
+  submitted: signal<bool> = false
+
+  fn save() {
+    submitted = true
+    status = "Saved: " + note
+  }
+}
+
+<div class="event-demo">
+  <form @submit.prevent={|event| save()}>
+    <label>
+      Note (@change updates signal)
+      <input name="note" @change={|event| note = event.target.value} value={note} />
+    </label>
+    <button type="submit">Save (@submit.prevent)</button>
+  </form>
+
+  @if submitted {
+    <p class="success">{status}</p>
+  }
+
+  <label>
+    Keyboard (@keydown, @focus, @blur)
+    <input
+      @keydown={|event| event.key == "Enter" && save()}
+      @focus={|event| status = "focused"}
+      @blur={status = "blurred"}
+      placeholder="Focus me, press Enter to save"
+    />
+  </label>
+  <p>Status: {status}</p>
+</div>

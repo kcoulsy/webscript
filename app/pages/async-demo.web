@@ -40,8 +40,4 @@
   <p>Steps from <code>fn</code> + <code>while</code>: {steps}</p>
   <p><code>sleep</code>, <code>spawn</code>, <code>timeout</code>: {message}</p>
   <p>Timed out: {timedOut}</p>
-  <nav>
-    <a href="/">Home</a>
-    <a href="/fetch-demo">Fetch demo</a>
-  </nav>
 </main>

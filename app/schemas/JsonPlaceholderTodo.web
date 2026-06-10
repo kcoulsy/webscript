@@ -1,0 +1,6 @@
+@schema JsonPlaceholderTodo {
+  userId: int
+  id: int
+  title: string
+  completed: bool
+}

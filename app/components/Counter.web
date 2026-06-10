@@ -1,11 +1,15 @@
 @component Counter {
   initial: int = 0
+  label: string = "Count"
 }
 
 @client {
   count: signal<int> = initial
 }
 
-<button @click={count++}>
-  {count}
-</button>
+<div class="counter">
+  <p>{label}: {count}</p>
+  <button @click={|event| count++}>+</button>
+  <button @click={count--}>-</button>
+  <button @click={count = 0}>Reset</button>
+</div>

@@ -85,6 +85,9 @@ impl ProjectRuntime {
         let mut components = render::ComponentRegistry::new();
         for file in files {
             let (parsed, source) = self.parse_file_with_source(&file)?;
+            if parsed.layout.is_some() {
+                continue;
+            }
             if let Some(component) = &parsed.component {
                 if components
                     .insert(component.name.clone(), parsed.clone())
@@ -100,6 +103,30 @@ impl ProjectRuntime {
         }
 
         Ok(components)
+    }
+
+    pub fn load_layouts(&mut self) -> Result<render::LayoutRegistry, FileDiagnostic> {
+        let mut files = Vec::new();
+        collect_web_files(&self.root.join("app"), &mut files).map_err(read_dir_diagnostic)?;
+
+        let mut layouts = render::LayoutRegistry::new();
+        for file in files {
+            let (parsed, source) = self.parse_file_with_source(&file)?;
+            if let Some(layout) = &parsed.layout {
+                if layouts
+                    .insert(layout.name.clone(), parsed.clone())
+                    .is_some()
+                {
+                    return Err(duplicate_layout_diagnostic(&file, &source, &layout.name));
+                }
+            }
+        }
+
+        Ok(layouts)
+    }
+
+    pub fn default_layout(&self) -> Option<String> {
+        load_default_layout(&self.root)
     }
 
     fn discover_routes(&mut self) -> Result<Vec<Route>, FileDiagnostic> {
@@ -174,6 +201,52 @@ fn read_dir_diagnostic(error: String) -> FileDiagnostic {
     )
 }
 
+fn load_default_layout(root: &Path) -> Option<String> {
+    let source = fs::read_to_string(root.join("web.config")).ok()?;
+    let mut in_defaults = false;
+    for line in source.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("@defaults") {
+            in_defaults = true;
+            continue;
+        }
+        if in_defaults {
+            if trimmed == "}" {
+                break;
+            }
+            if let Some(name) = trimmed.strip_prefix("layout:") {
+                let name = name.trim().trim_matches('"');
+                if !name.is_empty() {
+                    return Some(name.to_string());
+                }
+            }
+        }
+    }
+    None
+}
+
+fn duplicate_layout_diagnostic(file: &Path, source: &str, name: &str) -> FileDiagnostic {
+    let (line, column) = source
+        .lines()
+        .enumerate()
+        .find_map(|(index, line)| {
+            line.trim()
+                .strip_prefix("@layout")
+                .map(|_| (index + 1, line.find('@').unwrap_or(0) + 1))
+        })
+        .unwrap_or((1, 1));
+
+    FileDiagnostic::new(
+        file.to_path_buf(),
+        source.to_string(),
+        Diagnostic::error(
+            Span::new(line, column, column + name.len()),
+            format!("duplicate layout `{name}`"),
+            None,
+        ),
+    )
+}
+
 fn duplicate_component_diagnostic(file: &Path, source: &str, name: &str) -> FileDiagnostic {
     let (line, column) = source
         .lines()
@@ -221,7 +294,7 @@ pub fn create_project(root: &Path) -> Result<(), String> {
 
     fs::write(
         root.join("web.config"),
-        "@deploy {\n  mode: \"runtime\"\n  adapter: \"node\"\n}\n",
+        "@deploy {\n  mode: \"runtime\"\n  adapter: \"node\"\n}\n\n@defaults {\n  layout: AppLayout\n}\n",
     )
     .map_err(|error| error.to_string())?;
 
@@ -253,7 +326,17 @@ pub fn check_project(root: &Path) -> Result<Vec<FileDiagnostic>, String> {
     }
 
     let mut components = render::ComponentRegistry::new();
+    let mut layouts = render::LayoutRegistry::new();
     for (file, (parsed, source)) in &parsed_by_file {
+        if let Some(layout) = &parsed.layout {
+            if layouts
+                .insert(layout.name.clone(), parsed.clone())
+                .is_some()
+            {
+                diagnostics.push(duplicate_layout_diagnostic(file, source, &layout.name));
+            }
+            continue;
+        }
         if let Some(component) = &parsed.component {
             if components
                 .insert(component.name.clone(), parsed.clone())
@@ -268,6 +351,8 @@ pub fn check_project(root: &Path) -> Result<Vec<FileDiagnostic>, String> {
         }
     }
 
+    let default_layout = load_default_layout(root);
+
     let schema_names: std::collections::BTreeSet<String> = match schema::discover_schemas(root) {
         Ok(schemas) => schemas.into_iter().map(|schema| schema.name).collect(),
         Err(schema::SchemaLoadError::Diagnostic(diagnostic)) => {
@@ -277,8 +362,26 @@ pub fn check_project(root: &Path) -> Result<Vec<FileDiagnostic>, String> {
         Err(schema::SchemaLoadError::Io(error)) => return Err(error),
     };
 
+    let models = match db::discover_models(root) {
+        Ok(models) => models
+            .into_iter()
+            .map(|model| (model.name.clone(), model))
+            .collect(),
+        Err(db::ModelLoadError::Diagnostic(file_diagnostic)) => {
+            diagnostics.push(file_diagnostic);
+            BTreeMap::new()
+        }
+        Err(db::ModelLoadError::Io(error)) => return Err(error),
+    };
+
     for (file, (parsed, source)) in &parsed_by_file {
-        for diagnostic in render::validate_with_components(parsed, &components) {
+        for diagnostic in render::validate_with_components(
+            parsed,
+            &components,
+            &layouts,
+            default_layout.as_deref(),
+            &models,
+        ) {
             diagnostics.push(FileDiagnostic::new(
                 file.clone(),
                 source.clone(),

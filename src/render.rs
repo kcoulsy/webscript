@@ -1,11 +1,13 @@
 use crate::client::{
-    build_click_handler, resolve_signal_initial, IslandManifest, SignalBinding, TextBinding,
+    build_event_handler, compile_handler_body, index_event_attributes, resolve_signal_initial,
+    HandlerCompileContext, IfBinding, IslandManifest, NamedHandler, SignalBinding, TextBinding,
+    ValueBinding,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
 use crate::parser::{
-    ClientBlock, ComponentCall, ComponentProp, LetDecl, LetValue, PropValue, SourceExpr,
-    TemplateNode, Value, WebFile,
+    ClientBlock, ComponentCall, ComponentProp, LayoutUse, LetDecl, LetValue, PropValue,
+    SourceExpr, TemplateNode, Value, WebFile,
 };
 use crate::runtime::WebRuntime;
 use crate::stmt::{self, BlockOutcome, Statement};
@@ -13,6 +15,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 pub type Scope = BTreeMap<String, Value>;
 pub type ComponentRegistry = BTreeMap<String, WebFile>;
+pub type LayoutRegistry = BTreeMap<String, WebFile>;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RenderOutput {
@@ -28,7 +31,15 @@ struct RenderContext {
 
 struct IslandBuildState<'a> {
     signal_names: BTreeSet<String>,
+    signal_types: BTreeMap<String, String>,
+    handler_names: BTreeSet<String>,
+    event_counts: BTreeMap<String, usize>,
     manifest: &'a mut IslandManifest,
+}
+
+struct ClientValidateContext {
+    signals: BTreeSet<String>,
+    handlers: BTreeSet<String>,
 }
 
 pub fn render_with_components(
@@ -47,12 +58,14 @@ pub fn render_with_components(
     let mut scope = base_scope_for(file, params);
     evaluate_lets(&file.lets, &mut scope)?;
     let mut context = RenderContext::default();
+    let mut island = None;
     let html = render_nodes(
         &file.template,
         &scope,
         components,
         runtime,
         &mut context,
+        &mut island,
         None,
     )?;
     Ok(RenderOutput {
@@ -67,37 +80,179 @@ pub async fn render_with_components_async(
     components: &ComponentRegistry,
     runtime: &WebRuntime,
 ) -> Result<RenderOutput, Diagnostic> {
+    render_page_async(file, params, components, &LayoutRegistry::new(), None, runtime).await
+}
+
+pub async fn render_page_async(
+    file: &WebFile,
+    params: &Scope,
+    components: &ComponentRegistry,
+    layouts: &LayoutRegistry,
+    default_layout: Option<&str>,
+    runtime: &WebRuntime,
+) -> Result<RenderOutput, Diagnostic> {
     let scope = scope_for_async(file, params, runtime).await?;
     let mut context = RenderContext::default();
-    let html = render_nodes(
+    let mut island = None;
+    let page_html = render_nodes(
         &file.template,
         &scope,
         components,
         runtime,
         &mut context,
+        &mut island,
         None,
     )?;
+
+    let layout_name = match &file.layout_use {
+        Some(LayoutUse::None) => None,
+        Some(LayoutUse::Apply { name, .. }) => Some(name.as_str()),
+        None => default_layout,
+    };
+
+    let Some(layout_name) = layout_name else {
+        return Ok(RenderOutput {
+            html: page_html,
+            islands: context.islands,
+        });
+    };
+
+    let layout_file = layouts.get(layout_name).ok_or_else(|| {
+        Diagnostic::error(
+            Span::at(1, 1),
+            format!("unknown layout `{layout_name}`"),
+            None,
+        )
+    })?;
+
+    let layout_scope = layout_scope_for(
+        layout_file,
+        file.layout_use.as_ref(),
+        &scope,
+    )?;
+    let mut layout_island = None;
+    let html = render_nodes(
+        &layout_file.template,
+        &layout_scope,
+        components,
+        runtime,
+        &mut context,
+        &mut layout_island,
+        Some(&page_html),
+    )?;
+
     Ok(RenderOutput {
         html,
         islands: context.islands,
     })
 }
 
-pub fn validate_with_components(file: &WebFile, components: &ComponentRegistry) -> Vec<Diagnostic> {
+pub fn validate_with_components(
+    file: &WebFile,
+    components: &ComponentRegistry,
+    layouts: &LayoutRegistry,
+    default_layout: Option<&str>,
+    models: &BTreeMap<String, crate::db::ModelDecl>,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let mut scope = base_scope_for(file, &Scope::new());
     merge_load_samples(file, &mut scope);
     if let Err(error) = evaluate_lets(&file.lets, &mut scope) {
         diagnostics.push(error);
     }
-    validate_nodes(&file.template, &scope, components, &mut diagnostics);
+    merge_client_samples(file, &mut scope, &mut diagnostics);
+    let client_ctx = client_validate_context(file);
+    let allow_slot = file.layout.is_some();
+    validate_nodes(
+        &file.template,
+        &scope,
+        components,
+        allow_slot,
+        client_ctx.as_ref(),
+        models,
+        &mut diagnostics,
+    );
     if let Some(load) = &file.load {
         validate_server_block(load, &mut diagnostics);
     }
     for action in &file.actions {
         validate_server_block_statements(&action.statements, &mut diagnostics);
     }
+    if file.route.is_some() {
+        validate_page_layout(file, layouts, default_layout, &mut diagnostics);
+    }
     diagnostics
+}
+
+fn validate_page_layout(
+    file: &WebFile,
+    layouts: &LayoutRegistry,
+    default_layout: Option<&str>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let layout_name = match &file.layout_use {
+        Some(LayoutUse::None) => return,
+        Some(LayoutUse::Apply { name, .. }) => name.as_str(),
+        None => match default_layout {
+            Some(name) => name,
+            None => return,
+        },
+    };
+
+    if !layouts.contains_key(layout_name) {
+        let line = match &file.layout_use {
+            Some(LayoutUse::Apply { line, .. }) => *line,
+            _ => 1,
+        };
+        diagnostics.push(Diagnostic::error(
+            Span::at(line, 1),
+            format!("unknown layout `{layout_name}`"),
+            None,
+        ));
+    }
+}
+
+fn layout_scope_for(
+    layout_file: &WebFile,
+    layout_use: Option<&LayoutUse>,
+    page_scope: &Scope,
+) -> Result<Scope, Diagnostic> {
+    let declaration = layout_file.layout.as_ref().ok_or_else(|| {
+        Diagnostic::error(
+            Span::at(1, 1),
+            "layout file is missing @layout declaration",
+            None,
+        )
+    })?;
+
+    let mut scope = Scope::new();
+    for prop in &declaration.props {
+        scope.insert(
+            prop.name.clone(),
+            prop.default
+                .clone()
+                .unwrap_or_else(|| sample_for_prop_type(&prop.type_name)),
+        );
+    }
+
+    if let Some(LayoutUse::Apply { props, .. }) = layout_use {
+        for prop in props {
+            let value = evaluate_prop_value(&prop.value, page_scope, prop)?;
+            scope.insert(prop.name.clone(), value);
+        }
+    }
+
+    for prop in &declaration.props {
+        if !scope.contains_key(&prop.name) && prop.default.is_none() {
+            return Err(Diagnostic::error(
+                Span::at(1, 1),
+                format!("missing layout prop `{}`", prop.name),
+                None,
+            ));
+        }
+    }
+
+    Ok(scope)
 }
 
 fn merge_load_samples(file: &WebFile, scope: &mut Scope) {
@@ -113,6 +268,33 @@ fn merge_load_samples(file: &WebFile, scope: &mut Scope) {
             scope.insert(name.clone(), sample_for_prop_type(type_name));
         }
     }
+}
+
+fn merge_client_samples(file: &WebFile, scope: &mut Scope, diagnostics: &mut Vec<Diagnostic>) {
+    let Some(client) = &file.client else {
+        return;
+    };
+    for signal in &client.signals {
+        match resolve_signal_initial(signal, scope) {
+            Ok(initial) => {
+                scope.insert(signal.name.clone(), initial);
+            }
+            Err(error) => diagnostics.push(error),
+        }
+    }
+}
+
+fn client_validate_context(file: &WebFile) -> Option<ClientValidateContext> {
+    let client = file.client.as_ref()?;
+    let mut signals = BTreeSet::new();
+    let mut handlers = BTreeSet::new();
+    for signal in &client.signals {
+        signals.insert(signal.name.clone());
+    }
+    for handler in &client.handlers {
+        handlers.insert(handler.name.clone());
+    }
+    Some(ClientValidateContext { signals, handlers })
 }
 
 fn validate_server_block(load: &crate::parser::ServerBlock, diagnostics: &mut Vec<Diagnostic>) {
@@ -289,7 +471,8 @@ fn render_nodes(
     components: &ComponentRegistry,
     runtime: &WebRuntime,
     context: &mut RenderContext,
-    mut island: Option<&mut IslandBuildState<'_>>,
+    island: &mut Option<&mut IslandBuildState<'_>>,
+    slot_content: Option<&str>,
 ) -> Result<String, Diagnostic> {
     let mut html = String::new();
     let mut scope = scope.clone();
@@ -297,8 +480,14 @@ fn render_nodes(
     for node in nodes {
         match node {
             TemplateNode::Text(value) => html.push_str(value),
+            TemplateNode::Slot => {
+                if let Some(content) = slot_content {
+                    html.push_str(content);
+                }
+            }
             TemplateNode::Expr(expr) => {
-                html.push_str(&render_expr(expr, &scope, island.as_deref_mut())?);
+                let in_value_attr = html.ends_with("value=");
+                html.push_str(&render_expr(expr, &scope, island, in_value_attr)?);
             }
             TemplateNode::Component(call) => {
                 html.push_str(&render_component(
@@ -310,6 +499,69 @@ fn render_nodes(
                 then_nodes,
                 else_nodes,
             } => {
+                let client_if_signal = island.as_ref().and_then(|state| {
+                    signal_expr_name(&condition.expr).and_then(|name| {
+                        if state.signal_types.get(name) == Some(&"bool".to_string()) {
+                            Some(name.to_string())
+                        } else {
+                            None
+                        }
+                    })
+                });
+
+                if let Some(signal_name) = client_if_signal {
+                    let value = evaluate_source_expr(condition, &scope)?;
+                    let Some(condition_value) = value.as_bool() else {
+                        return Err(if_condition_not_bool(condition));
+                    };
+
+                    if let Some(island_state) = island.as_deref_mut() {
+                        if !island_state
+                            .manifest
+                            .if_bindings
+                            .iter()
+                            .any(|binding| binding.signal == signal_name)
+                        {
+                            island_state.manifest.if_bindings.push(IfBinding {
+                                signal: signal_name.clone(),
+                            });
+                        }
+                    }
+
+                    let then_display = if condition_value { "" } else { "none" };
+                    html.push_str(&format!(
+                        "<div data-ws-if=\"{signal_name}\" data-ws-branch=\"then\" style=\"display:{then_display}\">"
+                    ));
+                    html.push_str(&render_nodes(
+                        then_nodes,
+                        &scope,
+                        components,
+                        runtime,
+                        context,
+                        island,
+                        slot_content,
+                    )?);
+                    html.push_str("</div>");
+
+                    if !else_nodes.is_empty() {
+                        let else_display = if condition_value { "none" } else { "" };
+                        html.push_str(&format!(
+                            "<div data-ws-if=\"{signal_name}\" data-ws-branch=\"else\" style=\"display:{else_display}\">"
+                        ));
+                        html.push_str(&render_nodes(
+                            else_nodes,
+                            &scope,
+                            components,
+                            runtime,
+                            context,
+                            island,
+                            slot_content,
+                        )?);
+                        html.push_str("</div>");
+                    }
+                    continue;
+                }
+
                 let value = evaluate_source_expr(condition, &scope)?;
                 let Some(condition_value) = value.as_bool() else {
                     return Err(if_condition_not_bool(condition));
@@ -322,7 +574,8 @@ fn render_nodes(
                         components,
                         runtime,
                         context,
-                        island.as_deref_mut(),
+                        island,
+                        slot_content,
                     )?);
                 } else {
                     html.push_str(&render_nodes(
@@ -331,7 +584,8 @@ fn render_nodes(
                         components,
                         runtime,
                         context,
-                        island.as_deref_mut(),
+                        island,
+                        slot_content,
                     )?);
                 }
             }
@@ -354,7 +608,8 @@ fn render_nodes(
                         components,
                         runtime,
                         context,
-                        island.as_deref_mut(),
+                        island,
+                        slot_content,
                     )?);
                 }
             }
@@ -368,8 +623,38 @@ fn render_nodes(
             }
             TemplateNode::EventBinding(binding) => {
                 if let Some(island) = island.as_deref_mut() {
-                    let handler = build_click_handler(binding)?;
-                    island.manifest.click_handlers.push(handler);
+                    let index = *island
+                        .event_counts
+                        .entry(binding.event.clone())
+                        .or_insert(0);
+                    island.event_counts.insert(binding.event.clone(), index + 1);
+                    let compile_ctx = HandlerCompileContext {
+                        signals: &island.signal_names,
+                        handlers: &island.handler_names,
+                        param: "event",
+                    };
+                    let handler = build_event_handler(binding, index, &compile_ctx)?;
+                    if binding.event == "input" || binding.event == "change" {
+                        if let Some((left, right)) =
+                            binding.handler_source.split_once('=')
+                        {
+                            let signal = left.trim();
+                            if island.signal_names.contains(signal)
+                                && (right.trim() == "event.value"
+                                    || right.trim() == "event.target.value")
+                                && !island.manifest.value_bindings.iter().any(|value| {
+                                    value.signal == signal
+                                        && value.handler_index == index
+                                })
+                            {
+                                island.manifest.value_bindings.push(ValueBinding {
+                                    signal: signal.to_string(),
+                                    handler_index: index,
+                                });
+                            }
+                        }
+                    }
+                    island.manifest.event_handlers.push(handler);
                 }
             }
         }
@@ -381,12 +666,48 @@ fn render_nodes(
 fn render_expr(
     expr: &SourceExpr,
     scope: &Scope,
-    island: Option<&mut IslandBuildState<'_>>,
+    island: &mut Option<&mut IslandBuildState<'_>>,
+    in_value_attr: bool,
 ) -> Result<String, Diagnostic> {
-    if let Some(island) = island {
+    if let Some(island) = island.as_deref_mut() {
         if let Some(signal_name) = signal_expr_name(&expr.expr) {
             if island.signal_names.contains(signal_name) {
                 let value = evaluate_source_expr(expr, scope)?;
+                let type_name = island
+                    .signal_types
+                    .get(signal_name)
+                    .map(String::as_str)
+                    .unwrap_or("string");
+
+                if in_value_attr && type_name == "string" {
+                    if !island.manifest.value_bindings.iter().any(|binding| {
+                        binding.signal == signal_name
+                    }) {
+                        island.manifest.value_bindings.push(ValueBinding {
+                            signal: signal_name.to_string(),
+                            handler_index: 0,
+                        });
+                    }
+                    return Ok(escape_html(&value.render()));
+                }
+
+                if type_name == "string" {
+                    if !island
+                        .manifest
+                        .text_bindings
+                        .iter()
+                        .any(|binding| binding.signal == signal_name)
+                    {
+                        island.manifest.text_bindings.push(TextBinding {
+                            signal: signal_name.to_string(),
+                        });
+                    }
+                    return Ok(format!(
+                        "<span data-ws-text=\"{signal_name}\">{}</span>",
+                        escape_html(&value.render())
+                    ));
+                }
+
                 if !island
                     .manifest
                     .text_bindings
@@ -440,12 +761,14 @@ fn render_component(
         );
     }
 
+    let mut island = None;
     render_nodes(
         &component.template,
         &component_scope,
         components,
         runtime,
         context,
+        &mut island,
         None,
     )
 }
@@ -469,10 +792,12 @@ fn render_client_component(
     let mut signal_bindings = Vec::new();
     let mut render_scope = component_scope.clone();
     let mut signal_names = BTreeSet::new();
+    let mut signal_types = BTreeMap::new();
 
     for signal in &client.signals {
         let initial = resolve_signal_initial(signal, component_scope)?;
         signal_names.insert(signal.name.clone());
+        signal_types.insert(signal.name.clone(), signal.type_name.clone());
         signal_bindings.push(SignalBinding {
             name: signal.name.clone(),
             type_name: signal.type_name.clone(),
@@ -481,27 +806,57 @@ fn render_client_component(
         render_scope.insert(signal.name.clone(), initial);
     }
 
+    let mut handler_names = BTreeSet::new();
+    for handler in &client.handlers {
+        handler_names.insert(handler.name.clone());
+    }
+
+    let compile_ctx = HandlerCompileContext {
+        signals: &signal_names,
+        handlers: &handler_names,
+        param: "event",
+    };
+    let mut named_handlers = Vec::new();
+    for handler in &client.handlers {
+        let js_body = compile_handler_body(&handler.body, &compile_ctx, handler.line, 1)?;
+        named_handlers.push(NamedHandler {
+            name: handler.name.clone(),
+            js_body,
+        });
+    }
+
     let mut manifest = IslandManifest {
         id: island_id.clone(),
         component: call.name.clone(),
         signals: signal_bindings,
-        click_handlers: Vec::new(),
+        event_handlers: Vec::new(),
+        named_handlers,
         text_bindings: Vec::new(),
+        value_bindings: Vec::new(),
+        if_bindings: Vec::new(),
     };
 
     let mut island_state = IslandBuildState {
         signal_names,
+        signal_types,
+        handler_names,
+        event_counts: BTreeMap::new(),
         manifest: &mut manifest,
     };
 
+    let mut island_ref = Some(&mut island_state);
     let inner = render_nodes(
         &component.template,
         &render_scope,
         components,
         runtime,
         context,
-        Some(&mut island_state),
+        &mut island_ref,
+        None,
     )?;
+
+    let inner = index_event_attributes(&inner, &manifest.event_handlers);
+    let inner = annotate_value_bindings(&inner, &manifest.value_bindings);
 
     context.islands.push(manifest);
 
@@ -580,12 +935,21 @@ fn validate_nodes(
     nodes: &[TemplateNode],
     scope: &Scope,
     components: &ComponentRegistry,
+    allow_slot: bool,
+    client_ctx: Option<&ClientValidateContext>,
+    models: &BTreeMap<String, crate::db::ModelDecl>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let mut scope = scope.clone();
     for node in nodes {
         match node {
             TemplateNode::Text(_) => {}
+            TemplateNode::Slot if !allow_slot => diagnostics.push(Diagnostic::error(
+                Span::at(1, 1),
+                "<slot /> is only allowed in layout templates",
+                None,
+            )),
+            TemplateNode::Slot => {}
             TemplateNode::Expr(expr) => {
                 if let Err(error) = evaluate_source_expr(expr, &scope) {
                     diagnostics.push(error);
@@ -604,8 +968,24 @@ fn validate_nodes(
                     Ok(_) => diagnostics.push(if_condition_not_bool(condition)),
                     Err(error) => diagnostics.push(error),
                 }
-                validate_nodes(then_nodes, &scope, components, diagnostics);
-                validate_nodes(else_nodes, &scope, components, diagnostics);
+                validate_nodes(
+                    then_nodes,
+                    &scope,
+                    components,
+                    allow_slot,
+                    client_ctx,
+                    models,
+                    diagnostics,
+                );
+                validate_nodes(
+                    else_nodes,
+                    &scope,
+                    components,
+                    allow_slot,
+                    client_ctx,
+                    models,
+                    diagnostics,
+                );
             }
             TemplateNode::For {
                 item_name,
@@ -614,10 +994,18 @@ fn validate_nodes(
             } => match evaluate_source_expr(source, &scope) {
                 Ok(value) if value.as_array().is_some() => {
                     let mut loop_scope = scope.clone();
-                    if let Some(sample) = value.array_sample() {
+                    if let Some(sample) = array_loop_sample(&value, models) {
                         loop_scope.insert(item_name.clone(), sample);
                     }
-                    validate_nodes(body, &loop_scope, components, diagnostics);
+                    validate_nodes(
+                        body,
+                        &loop_scope,
+                        components,
+                        allow_slot,
+                        client_ctx,
+                        models,
+                        diagnostics,
+                    );
                 }
                 Ok(_) => diagnostics.push(for_source_not_array(source)),
                 Err(error) => diagnostics.push(error),
@@ -635,7 +1023,18 @@ fn validate_nodes(
                 }
             }
             TemplateNode::EventBinding(binding) => {
-                if let Err(error) = build_click_handler(binding) {
+                let empty_signals = BTreeSet::new();
+                let empty_handlers = BTreeSet::new();
+                let (signals, handlers) = match client_ctx {
+                    Some(ctx) => (&ctx.signals, &ctx.handlers),
+                    None => (&empty_signals, &empty_handlers),
+                };
+                let compile_ctx = HandlerCompileContext {
+                    signals,
+                    handlers,
+                    param: "event",
+                };
+                if let Err(error) = build_event_handler(binding, 0, &compile_ctx) {
                     diagnostics.push(error);
                 }
             }
@@ -822,10 +1221,44 @@ fn is_object_type_name(type_name: &str) -> bool {
 }
 
 fn sample_for_prop_type(type_name: &str) -> Value {
+    if type_name.ends_with("[]") {
+        return sample_for_type(type_name);
+    }
     if is_object_type_name(type_name) {
         return Value::Object(BTreeMap::new());
     }
     sample_for_type(type_name)
+}
+
+fn sample_for_element_type(
+    element_type: &str,
+    models: &BTreeMap<String, crate::db::ModelDecl>,
+) -> Value {
+    if let Some(model) = models.get(element_type) {
+        let mut fields = BTreeMap::new();
+        for field in &model.fields {
+            fields.insert(field.name.clone(), sample_for_prop_type(&field.type_name));
+        }
+        return Value::Object(fields);
+    }
+    sample_for_prop_type(element_type)
+}
+
+fn array_loop_sample(
+    value: &Value,
+    models: &BTreeMap<String, crate::db::ModelDecl>,
+) -> Option<Value> {
+    let Value::Array {
+        element_type,
+        values,
+    } = value
+    else {
+        return None;
+    };
+    values
+        .first()
+        .cloned()
+        .or_else(|| Some(sample_for_element_type(element_type, models)))
 }
 
 fn sample_for_type(type_name: &str) -> Value {
@@ -842,6 +1275,25 @@ fn sample_for_type(type_name: &str) -> Value {
         "object" => Value::Object(BTreeMap::new()),
         _ => Value::String(String::new()),
     }
+}
+
+fn annotate_value_bindings(html: &str, bindings: &[ValueBinding]) -> String {
+    if bindings.is_empty() {
+        return html.to_string();
+    }
+
+    let mut output = html.to_string();
+    for binding in bindings {
+        let marker = format!("data-ws-value=\"{}\"", binding.signal);
+        if output.contains(&marker) {
+            continue;
+        }
+        if let Some(index) = output.find("data-ws-input") {
+            let insert_at = index + "data-ws-input".len();
+            output.insert_str(insert_at, &format!(" {marker}"));
+        }
+    }
+    output
 }
 
 fn escape_html(value: &str) -> String {
@@ -1070,7 +1522,7 @@ mod tests {
     }
 
     #[tokio::test]
-    #[ignore = "requires network access to httpbin.org"]
+    #[ignore = "requires network access to jsonplaceholder.typicode.com"]
     async fn fetch_demo_fetches_json_with_schema() {
         let file = parse(include_str!("../app/pages/fetch-demo.web")).expect("valid page");
         let root = std::env::current_dir().expect("cwd");
@@ -1084,13 +1536,14 @@ mod tests {
         .await
         .expect("rendered");
 
-        assert!(output.html.contains("httpbin.org") || output.html.is_empty() == false);
+        assert!(output.html.contains("delectus") || output.html.contains("Title:"));
     }
 
     #[test]
     fn renders_client_counter_island() {
         let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
-        let page = parse(include_str!("../app/pages/counter.web")).expect("page");
+        let page = parse("@page \"/counter\"\n\n<Counter initial={5} label=\"Score\" />")
+            .expect("page");
         let mut components = ComponentRegistry::new();
         components.insert("Counter".to_string(), counter);
 
@@ -1103,14 +1556,58 @@ mod tests {
         .expect("rendered");
 
         assert!(output.html.contains("data-ws-island=\"Counter-0\""));
-        assert!(output.html.contains("data-ws-click"));
+        assert!(output.html.contains("data-ws-click=\"0\""));
+        assert!(output.html.contains("data-ws-click=\"1\""));
         assert!(output.html.contains("data-ws-text=\"count\">5</span>"));
         assert_eq!(output.islands.len(), 1);
         assert_eq!(output.islands[0].signals[0].initial, crate::parser::Value::Int(5));
+        assert_eq!(output.islands[0].event_handlers.len(), 3);
 
         let script = crate::client::render_island_script(&output.islands[0]);
         assert!(script.contains("WebScript.signal(5)"));
         assert!(script.contains("addEventListener('click'"));
+    }
+
+    #[test]
+    fn renders_client_details_toggle_island() {
+        let details = parse(include_str!("../app/components/Details.web")).expect("details");
+        let page = parse("@page \"/\"\n\n<Details title=\"Notes\" />").expect("page");
+        let mut components = ComponentRegistry::new();
+        components.insert("Details".to_string(), details);
+
+        let output = render_with_components(
+            &page,
+            &Scope::new(),
+            &components,
+            &WebRuntime::new(),
+        )
+        .expect("rendered");
+
+        assert!(output.html.contains("data-ws-if=\"open\""));
+        assert_eq!(output.islands[0].if_bindings.len(), 1);
+        let script = crate::client::render_island_script(&output.islands[0]);
+        assert!(script.contains("if_open_then"));
+    }
+
+    #[test]
+    fn renders_client_greeting_input_island() {
+        let greeting = parse(include_str!("../app/components/Greeting.web")).expect("greeting");
+        let page = parse("@page \"/\"\n\n<Greeting />").expect("page");
+        let mut components = ComponentRegistry::new();
+        components.insert("Greeting".to_string(), greeting);
+
+        let output = render_with_components(
+            &page,
+            &Scope::new(),
+            &components,
+            &WebRuntime::new(),
+        )
+        .expect("rendered");
+
+        assert!(output.html.contains("data-ws-input"));
+        assert!(output.html.contains("data-ws-value=\"name\""));
+        let script = crate::client::render_island_script(&output.islands[0]);
+        assert!(script.contains("addEventListener('input'"));
     }
 
     #[tokio::test]
@@ -1142,5 +1639,28 @@ mod tests {
             matches!(outcome, super::ActionOutcome::Fail(message) if message == "Name is required")
         );
         assert!(!session.contains_key("name"));
+    }
+
+    #[tokio::test]
+    async fn wraps_page_content_in_layout_slot() {
+        let layout = parse(include_str!("../app/layouts/AppLayout.web")).expect("layout");
+        let page = parse("@page \"/\"\n\n<main><h1>Hello</h1></main>").expect("page");
+        let mut layouts = super::LayoutRegistry::new();
+        layouts.insert("AppLayout".to_string(), layout);
+        let runtime = WebRuntime::new();
+
+        let output = super::render_page_async(
+            &page,
+            &Scope::new(),
+            &ComponentRegistry::new(),
+            &layouts,
+            Some("AppLayout"),
+            &runtime,
+        )
+        .await
+        .expect("rendered");
+
+        assert!(output.html.contains("app-layout"));
+        assert!(output.html.contains("<main><h1>Hello</h1></main>"));
     }
 }

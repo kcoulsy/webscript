@@ -1,4 +1,0 @@
-@schema HttpBinGet {
-  origin: string
-  url: string
-}

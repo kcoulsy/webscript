@@ -162,6 +162,18 @@ fn handle_connection(
     };
     metrics.push("Components", components_started.elapsed(), None);
 
+    let layouts_started = Instant::now();
+    let layouts = match project_runtime.load_layouts() {
+        Ok(layouts) => layouts,
+        Err(diagnostic) => {
+            metrics.push("Layouts", layouts_started.elapsed(), None);
+            metrics.set_total(started.elapsed());
+            return respond_diagnostic(&mut stream, diagnostic, Some(metrics));
+        }
+    };
+    metrics.push("Layouts", layouts_started.elapsed(), None);
+    let default_layout = project_runtime.default_layout();
+
     let (session_id, mut session, is_new_session) =
         load_session(sessions, request.headers.get("cookie").map(String::as_str))
             .map_err(io_diagnostic)?;
@@ -220,10 +232,12 @@ fn handle_connection(
     render_params.insert("session".to_string(), crate::parser::Value::Object(session));
     let task_trace = Arc::new(Mutex::new(TaskTrace::new()));
     let request_runtime = web_runtime.for_request(Arc::clone(&task_trace));
-    let render_result = runtime_handle.block_on(render::render_with_components_async(
+    let render_result = runtime_handle.block_on(render::render_page_async(
         &parsed,
         &render_params,
         &components,
+        &layouts,
+        default_layout.as_deref(),
         &request_runtime,
     ));
     match render_result {

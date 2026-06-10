@@ -6,12 +6,55 @@ WebScript is server-first, but it supports browser-only interactivity through a 
 
 The current runtime supports:
 
-- `@client` signal declarations (`signal<int>`, `signal<bool>`)
-- `@click` handlers on component islands
+- `@client` signal declarations (`signal<int>`, `signal<bool>`, `signal<string>`)
+- `@client` named handler functions (`fn save() { ... }`)
+- Event handlers: `@click`, `@input`, `@change`, `@submit`, `@keydown`, `@keyup`, `@focus`, `@blur`
+- Event modifiers: `.prevent` (calls `event.preventDefault()`), `.stop` (calls `event.stopPropagation()`)
+- Pipe-lambda handlers (`|event| body`) as the canonical handler form
+- General client expressions in handlers (assignments, arithmetic, `event.key`, string concat, `&&`, etc.)
+- Bare expressions as sugar (desugared to `|event| ...` internally)
+- Reactive `@if` blocks driven by `signal<bool>` (both branches stay in the DOM)
 - Server-rendered initial HTML with per-island hydration scripts
 - `/.web/runtime.js` signal primitive (no bundler)
 
-Coming soon: reactive `@if` / `@for`, additional events (`@input`, `@submit`), enhanced forms, and page-level `@client` blocks.
+Pipe-lambda handlers (canonical form):
+
+```web
+@click={|event| count++}
+@click={|event| { count = 0; status = "reset" }}
+@input={|event| name = event.target.value}
+@change={|event| note = event.target.value}
+@submit.prevent={|event| save()}
+@keydown={|event| event.key == "Enter" && save()}
+@focus={|event| status = "focused"}
+@blur={|event| status = "blurred"}
+```
+
+Bare expressions still work as sugar:
+
+```web
+@click={count++}
+@click={count = 0}
+@submit.prevent={save}
+```
+
+Named handlers:
+
+```web
+@client {
+  count: signal<int> = 0
+
+  fn save() {
+    count = count + 1
+  }
+}
+
+<button @click={save}>Save</button>
+```
+
+See the `/counter` demo page for counters, toggle panels, live text input, and form/event demos.
+
+Coming soon: reactive `@for` and page-level `@client` blocks.
 
 ## Runtime Script
 
@@ -59,13 +102,22 @@ Only client-safe values can be used in `@client`.
 
 ## Event Handlers
 
+Handlers are functions. Use pipe-lambda syntax for inline handlers:
+
 ```web
-<button @click={count++}>Increment</button>
-<input @input={name = event.value} />
-<form @submit={save}>Save</form>
+<button @click={|event| count++}>Increment</button>
+<input @input={|event| name = event.target.value} />
+<form @submit.prevent={|event| save()}>Save</form>
 ```
 
-Common events:
+Shorthand sugar (desugared to `|event| ...`):
+
+```web
+<button @click={count++}>Increment</button>
+<form @submit.prevent={save}>Save</form>
+```
+
+Common events (all implemented on component islands):
 
 ```web
 @click
@@ -77,6 +129,16 @@ Common events:
 @focus
 @blur
 ```
+
+Modifiers (chain after the event name):
+
+```web
+@submit.prevent={save}
+@click.stop={select}
+@submit.prevent.stop={save}
+```
+
+Inside handlers you can use `event`, `event.target.value`, `event.key`, `event.preventDefault()`, and `event.stopPropagation()`.
 
 ## Client And Server Boundaries
 

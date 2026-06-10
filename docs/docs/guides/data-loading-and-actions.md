@@ -26,19 +26,22 @@ Example with `fetch` and error handling:
 
 ```web
 @load {
-  origin: string = ""
+  title: string = ""
   error: string = ""
 
   try {
-    data: HttpBinGet = await fetch("https://httpbin.org/get", HttpBinGet)
-    origin = data.origin
+    todo: JsonPlaceholderTodo = await fetch(
+      "https://jsonplaceholder.typicode.com/todos/1",
+      JsonPlaceholderTodo
+    )
+    title = todo.title
   } catch err {
     error = err.message
   }
 }
 ```
 
-See [validation schemas](./validation-schemas.md) for defining `HttpBinGet`.
+See [validation schemas](./validation-schemas.md) for defining `JsonPlaceholderTodo`.
 
 ## Returning From `@load`
 

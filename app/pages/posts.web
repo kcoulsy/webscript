@@ -27,10 +27,4 @@
   } @else {
     <p>Try /posts/intro to see an equality expression change this branch.</p>
   }
-
-  <nav>
-    <a href="/">Home</a>
-    <a href="/async-demo">Async demo</a>
-    <a href="/fetch-demo">Fetch demo</a>
-  </nav>
 </main>
