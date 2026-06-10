@@ -1,4 +1,4 @@
-use crate::debugbar::RequestMetrics;
+use crate::debugbar::{RequestMetrics, TaskTrace};
 use crate::dev;
 use crate::diagnostic::{self, FileDiagnostic};
 use crate::project;
@@ -207,15 +207,20 @@ fn handle_connection(
     let render_started = Instant::now();
     let mut render_params = params.clone();
     render_params.insert("session".to_string(), crate::parser::Value::Object(session));
+    let task_trace = Arc::new(Mutex::new(TaskTrace::new()));
+    let request_runtime = web_runtime.for_request(Arc::clone(&task_trace));
     let render_result = runtime_handle.block_on(render::render_with_components_async(
         &parsed,
         &render_params,
         &components,
-        web_runtime,
+        &request_runtime,
     ));
     match render_result {
         Ok(html) => {
             metrics.push("Render", render_started.elapsed(), None);
+            if let Ok(trace) = task_trace.lock() {
+                metrics.tasks = trace.spans().to_vec();
+            }
             metrics.set_total(started.elapsed());
             write_response_with_headers(
                 &mut stream,
@@ -229,6 +234,9 @@ fn handle_connection(
         }
         Err(error) => {
             metrics.push("Render", render_started.elapsed(), None);
+            if let Ok(trace) = task_trace.lock() {
+                metrics.tasks = trace.spans().to_vec();
+            }
             metrics.set_total(started.elapsed());
             respond_diagnostic(
                 &mut stream,

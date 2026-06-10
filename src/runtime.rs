@@ -1,3 +1,4 @@
+use crate::debugbar::{TaskKind, TaskTrace};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
 use crate::model_runtime::ModelRuntime;
@@ -9,8 +10,8 @@ use std::collections::BTreeMap;
 use std::future::Future;
 use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::Arc;
-use tokio::sync::Mutex;
+use std::sync::{Arc, Mutex};
+use tokio::sync::Mutex as AsyncMutex;
 use tokio::time::{sleep, timeout, Duration};
 
 pub type Env = BTreeMap<String, Value>;
@@ -22,25 +23,41 @@ type BoxFuture = Pin<Box<dyn Future<Output = Result<Value, WebError>> + Send>>;
 #[derive(Clone)]
 pub struct WebRuntime {
     client: Client,
-    promises: Arc<Mutex<BTreeMap<u64, BoxFuture>>>,
+    promises: Arc<AsyncMutex<BTreeMap<u64, BoxFuture>>>,
     models: Option<Arc<ModelRuntime>>,
+    trace: Option<Arc<Mutex<TaskTrace>>>,
+    promise_labels: Arc<Mutex<BTreeMap<u64, String>>>,
 }
 
 impl WebRuntime {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
-            promises: Arc::new(Mutex::new(BTreeMap::new())),
+            promises: Arc::new(AsyncMutex::new(BTreeMap::new())),
             models: None,
+            trace: None,
+            promise_labels: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
     pub fn with_database(root: std::path::PathBuf) -> Result<Self, String> {
         Ok(Self {
             client: Client::new(),
-            promises: Arc::new(Mutex::new(BTreeMap::new())),
+            promises: Arc::new(AsyncMutex::new(BTreeMap::new())),
             models: Some(ModelRuntime::new(root)?),
+            trace: None,
+            promise_labels: Arc::new(Mutex::new(BTreeMap::new())),
         })
+    }
+
+    pub fn for_request(&self, trace: Arc<Mutex<TaskTrace>>) -> Self {
+        Self {
+            client: self.client.clone(),
+            promises: Arc::clone(&self.promises),
+            models: self.models.clone(),
+            trace: Some(trace),
+            promise_labels: Arc::new(Mutex::new(BTreeMap::new())),
+        }
     }
 
     pub async fn execute_block_async(
@@ -407,12 +424,17 @@ impl WebRuntime {
                 )
                 .into());
             };
+            let label = format!("{model}.{method}");
             let id = self
-                .insert_future(async move {
-                    models
-                        .call(&model, &method, &evaluated_args)
-                        .map_err(|error| WebError { message: error })
-                })
+                .insert_future(
+                    label,
+                    TaskKind::Model,
+                    async move {
+                        models
+                            .call(&model, &method, &evaluated_args)
+                            .map_err(|error| WebError { message: error })
+                    },
+                )
                 .await;
             return Ok(Value::Promise { id });
         }
@@ -501,8 +523,9 @@ impl WebRuntime {
         let Value::Duration { ms } = expect_duration(args, line, column, "sleep")? else {
             unreachable!();
         };
+        let label = format!("sleep({ms}ms)");
         let id = self
-            .insert_future(async move {
+            .insert_future(label, TaskKind::Sleep, async move {
                 sleep(Duration::from_millis(ms as u64)).await;
                 Ok(Value::Object(BTreeMap::new()))
             })
@@ -517,9 +540,10 @@ impl WebRuntime {
         column: usize,
     ) -> Result<Value, Diagnostic> {
         let url = expect_string(args, line, column, "fetch")?;
+        let label = format!("fetch({})", truncate_label(&url, 48));
         let client = self.client.clone();
         let id = self
-            .insert_future(async move {
+            .insert_future(label, TaskKind::Fetch, async move {
                 let response = client.get(&url).send().await.map_err(|error| WebError {
                     message: error.to_string(),
                 })?;
@@ -547,6 +571,23 @@ impl WebRuntime {
         let Value::Promise { id } = expect_promise(args, line, column, "spawn")? else {
             unreachable!();
         };
+        let spawn_label = self
+            .promise_labels
+            .lock()
+            .ok()
+            .and_then(|labels| labels.get(&id).cloned())
+            .map(|label| format!("spawn({label})"));
+        if let Some(label) = spawn_label {
+            if let Ok(mut labels) = self.promise_labels.lock() {
+                labels.insert(id, label.clone());
+            }
+            if let Some(trace) = &self.trace {
+                if let Ok(mut guard) = trace.lock() {
+                    let index = guard.begin(label, TaskKind::Spawn);
+                    guard.finish(index);
+                }
+            }
+        }
         Ok(Value::Promise { id })
     }
 
@@ -584,8 +625,9 @@ impl WebRuntime {
             .take_future(*id)
             .await
             .ok_or_else(|| Diagnostic::error(Span::at(line, column), "unknown promise", None))?;
+        let label = format!("timeout({}ms)", duration.as_millis());
         let id = self
-            .insert_future(async move {
+            .insert_future(label, TaskKind::Timeout, async move {
                 match timeout(duration, inner).await {
                     Ok(result) => result,
                     Err(_) => Err(WebError {
@@ -597,12 +639,43 @@ impl WebRuntime {
         Ok(Value::Promise { id })
     }
 
-    async fn insert_future<F>(&self, future: F) -> u64
+    async fn insert_future<F>(
+        &self,
+        label: impl Into<String>,
+        kind: TaskKind,
+        future: F,
+    ) -> u64
     where
         F: Future<Output = Result<Value, WebError>> + Send + 'static,
     {
         let id = PROMISE_ID.fetch_add(1, Ordering::Relaxed);
-        self.promises.lock().await.insert(id, Box::pin(future));
+        let label = label.into();
+        if let Ok(mut labels) = self.promise_labels.lock() {
+            labels.insert(id, label.clone());
+        }
+
+        let trace = self.trace.clone();
+        let task_label = label;
+        let wrapped = async move {
+            let task_index = trace.as_ref().and_then(|trace| {
+                trace
+                    .lock()
+                    .ok()
+                    .map(|mut guard| guard.begin(&task_label, kind))
+            });
+            let result = future.await;
+            if let (Some(trace), Some(task_index)) = (trace.as_ref(), task_index) {
+                if let Ok(mut guard) = trace.lock() {
+                    guard.finish(task_index);
+                }
+            }
+            result
+        };
+
+        self.promises
+            .lock()
+            .await
+            .insert(id, Box::pin(wrapped));
         id
     }
 
@@ -629,8 +702,38 @@ impl WebRuntime {
             return Err(Diagnostic::error(Span::at(line, column), "unknown promise", None).into());
         };
 
-        future.await.map_err(EvalError::Thrown)
+        let await_label = self
+            .promise_labels
+            .lock()
+            .ok()
+            .and_then(|labels| labels.get(&id).cloned())
+            .map(|label| format!("await {label}"))
+            .unwrap_or_else(|| format!("await promise #{id}"));
+        let await_index = self.trace.as_ref().and_then(|trace| {
+            trace
+                .lock()
+                .ok()
+                .map(|mut guard| guard.begin(&await_label, TaskKind::Await))
+        });
+
+        let result = future.await.map_err(EvalError::Thrown);
+
+        if let (Some(trace), Some(await_index)) = (self.trace.as_ref(), await_index) {
+            if let Ok(mut guard) = trace.lock() {
+                guard.finish(await_index);
+            }
+        }
+
+        result
     }
+}
+
+fn truncate_label(value: &str, max_len: usize) -> String {
+    if value.chars().count() <= max_len {
+        return value.to_string();
+    }
+    let truncated: String = value.chars().take(max_len.saturating_sub(1)).collect();
+    format!("{truncated}…")
 }
 
 enum EvalError {

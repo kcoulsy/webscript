@@ -2,6 +2,9 @@
 
 @load {
   todos: Todo[] = await Todo.all()
+
+    _: object = await sleep(25ms)
+    _: object = await sleep(25ms)
 }
 
 @action addTodo {
