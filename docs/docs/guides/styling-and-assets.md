@@ -29,7 +29,7 @@ Components can define scoped styles:
   <h2>{user.name}</h2>
 </article>
 
-@style scoped {
+@style {
   .card {
     border: 1px solid #ddd;
     padding: 1rem;
@@ -37,7 +37,7 @@ Components can define scoped styles:
 }
 ```
 
-Scoped styles should only affect markup emitted by that component.
+Scoped styles only affect markup emitted by that component. Use `@style global { }` for page-wide CSS.
 
 ## Page Styles
 
@@ -56,7 +56,7 @@ Scoped styles should only affect markup emitted by that component.
 }
 ```
 
-Page styles can be scoped by default or global depending on project configuration. Scoped-by-default is safer.
+`@style { }` is scoped by default. Use `@style global { }` when styles should apply site-wide.
 
 ## Static Assets
 

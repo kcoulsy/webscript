@@ -13,6 +13,7 @@ mod project;
 mod render;
 mod runtime;
 mod server;
+mod style;
 mod stmt;
 mod validate;
 

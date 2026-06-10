@@ -1,0 +1,67 @@
+@component UI.Select {
+  name: string = ""
+  value: string = ""
+  options: string[] = []
+  placeholder: string = "Select an option"
+  disabled: bool = false
+}
+
+@if disabled {
+  <select class="ui-select" name={name} disabled>
+    @if value == "" {
+      <option value="" selected disabled>{placeholder}</option>
+    }
+    @for option in options {
+      <option value={option}>{option}</option>
+    }
+  </select>
+} @else {
+  <select class="ui-select" name={name}>
+    @if value == "" {
+      <option value="" selected disabled>{placeholder}</option>
+    }
+    @for option in options {
+      @if option == value {
+        <option value={option} selected>{option}</option>
+      } @else {
+        <option value={option}>{option}</option>
+      }
+    }
+  </select>
+}
+
+@style {
+  .ui-select {
+    display: flex;
+    width: 100%;
+    height: 2.25rem;
+    border-radius: var(--ui-radius);
+    border: 1px solid var(--ui-input);
+    background: var(--ui-background);
+    padding: 0 2rem 0 0.75rem;
+    font-size: 0.875rem;
+    color: var(--ui-foreground);
+    font-family: inherit;
+    cursor: pointer;
+    appearance: none;
+    background-image:
+      linear-gradient(45deg, transparent 50%, var(--ui-muted-foreground) 50%),
+      linear-gradient(135deg, var(--ui-muted-foreground) 50%, transparent 50%);
+    background-position:
+      calc(100% - 1rem) calc(50% - 2px),
+      calc(100% - 0.75rem) calc(50% - 2px);
+    background-size: 5px 5px, 5px 5px;
+    background-repeat: no-repeat;
+  }
+
+  .ui-select:focus {
+    outline: none;
+    border-color: var(--ui-ring);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--ui-ring) 25%, transparent);
+  }
+
+  .ui-select:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}

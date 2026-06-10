@@ -1,14 +1,15 @@
 use crate::client::{
     build_event_handler, compile_handler_body, index_event_attributes, resolve_signal_initial,
-    HandlerCompileContext, IfBinding, IslandManifest, NamedHandler, SignalBinding, TextBinding,
-    ValueBinding,
+    value_signal_from_field_handler, HandlerCompileContext, IfBinding, IslandManifest,
+    NamedHandler, SignalBinding, TextBinding, ValueBinding,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
 use crate::parser::{
     ClientBlock, ComponentCall, ComponentProp, LayoutUse, LetDecl, LetValue, PropValue,
-    SourceExpr, TemplateNode, Value, WebFile,
+    SourceExpr, StyleBlock, TemplateNode, Value, WebFile,
 };
+use crate::style;
 use crate::runtime::WebRuntime;
 use crate::stmt::{self, BlockOutcome, Statement};
 use std::collections::{BTreeMap, BTreeSet};
@@ -21,12 +22,16 @@ pub type LayoutRegistry = BTreeMap<String, WebFile>;
 pub struct RenderOutput {
     pub html: String,
     pub islands: Vec<IslandManifest>,
+    pub global_styles: Vec<String>,
+    pub scoped_styles: BTreeMap<String, String>,
 }
 
 #[derive(Default)]
 struct RenderContext {
     islands: Vec<IslandManifest>,
     island_counts: BTreeMap<String, usize>,
+    global_styles: Vec<String>,
+    scoped_styles: BTreeMap<String, String>,
 }
 
 struct IslandBuildState<'a> {
@@ -68,10 +73,9 @@ pub fn render_with_components(
         &mut island,
         None,
     )?;
-    Ok(RenderOutput {
-        html,
-        islands: context.islands,
-    })
+    let scope_id = scope_id_for_file(file);
+    let html = apply_file_styles(file, &scope_id, &mut context, html);
+    Ok(render_output(html, &context))
 }
 
 pub async fn render_with_components_async(
@@ -110,11 +114,11 @@ pub async fn render_page_async(
         None => default_layout,
     };
 
+    let page_scope_id = scope_id_for_file(file);
+    let page_html = apply_file_styles(file, &page_scope_id, &mut context, page_html);
+
     let Some(layout_name) = layout_name else {
-        return Ok(RenderOutput {
-            html: page_html,
-            islands: context.islands,
-        });
+        return Ok(render_output(page_html, &context));
     };
 
     let layout_file = layouts.get(layout_name).ok_or_else(|| {
@@ -131,7 +135,7 @@ pub async fn render_page_async(
         &scope,
     )?;
     let mut layout_island = None;
-    let html = render_nodes(
+    let mut html = render_nodes(
         &layout_file.template,
         &layout_scope,
         components,
@@ -141,10 +145,73 @@ pub async fn render_page_async(
         Some(&page_html),
     )?;
 
-    Ok(RenderOutput {
+    let layout_scope_id = scope_id_for_file(layout_file);
+    html = apply_file_styles(layout_file, &layout_scope_id, &mut context, html);
+
+    Ok(render_output(html, &context))
+}
+
+fn render_output(html: String, context: &RenderContext) -> RenderOutput {
+    RenderOutput {
         html,
-        islands: context.islands,
-    })
+        islands: context.islands.clone(),
+        global_styles: context.global_styles.clone(),
+        scoped_styles: context.scoped_styles.clone(),
+    }
+}
+
+fn scope_id_for_file(file: &WebFile) -> String {
+    if let Some(route) = &file.route {
+        return route.raw.clone();
+    }
+    if let Some(component) = &file.component {
+        return component.name.clone();
+    }
+    if let Some(layout) = &file.layout {
+        return layout.name.clone();
+    }
+    "page".to_string()
+}
+
+fn register_style_blocks(
+    styles: &[StyleBlock],
+    scope_id: &str,
+    context: &mut RenderContext,
+) -> bool {
+    let mut has_scoped = false;
+    for block in styles {
+        if block.global {
+            context.global_styles.push(block.css.clone());
+        } else {
+            has_scoped = true;
+            let scoped_css = style::scope_css(&block.css, scope_id);
+            context
+                .scoped_styles
+                .entry(scope_id.to_string())
+                .and_modify(|existing| {
+                    if !existing.is_empty() {
+                        existing.push('\n');
+                    }
+                    existing.push_str(&scoped_css);
+                })
+                .or_insert(scoped_css);
+        }
+    }
+    has_scoped
+}
+
+fn apply_file_styles(
+    file: &WebFile,
+    scope_id: &str,
+    context: &mut RenderContext,
+    html: String,
+) -> String {
+    let has_scoped = register_style_blocks(&file.styles, scope_id, context);
+    if has_scoped {
+        format!(r#"<div data-ws-style="{scope_id}">{html}</div>"#)
+    } else {
+        html
+    }
 }
 
 pub fn validate_with_components(
@@ -635,20 +702,17 @@ fn render_nodes(
                     };
                     let handler = build_event_handler(binding, index, &compile_ctx)?;
                     if binding.event == "input" || binding.event == "change" {
-                        if let Some((left, right)) =
-                            binding.handler_source.split_once('=')
+                        if let Some(signal) =
+                            value_signal_from_field_handler(&binding.handler_source)
                         {
-                            let signal = left.trim();
-                            if island.signal_names.contains(signal)
-                                && (right.trim() == "event.value"
-                                    || right.trim() == "event.target.value")
+                            if island.signal_names.contains(&signal)
                                 && !island.manifest.value_bindings.iter().any(|value| {
                                     value.signal == signal
                                         && value.handler_index == index
                                 })
                             {
                                 island.manifest.value_bindings.push(ValueBinding {
-                                    signal: signal.to_string(),
+                                    signal,
                                     handler_index: index,
                                 });
                             }
@@ -762,7 +826,7 @@ fn render_component(
     }
 
     let mut island = None;
-    render_nodes(
+    let html = render_nodes(
         &component.template,
         &component_scope,
         components,
@@ -770,7 +834,13 @@ fn render_component(
         context,
         &mut island,
         None,
-    )
+    )?;
+    let scope_id = component
+        .component
+        .as_ref()
+        .map(|decl| decl.name.as_str())
+        .unwrap_or(&call.name);
+    Ok(apply_file_styles(component, scope_id, context, html))
 }
 
 fn render_client_component(
@@ -860,10 +930,19 @@ fn render_client_component(
 
     context.islands.push(manifest);
 
-    Ok(format!(
-        "<div data-ws-island=\"{island_id}\" data-ws-component=\"{component}\">{inner}</div>",
-        component = call.name
-    ))
+    let scope_id = call.name.as_str();
+    let has_scoped = register_style_blocks(&component.styles, scope_id, context);
+    if has_scoped {
+        Ok(format!(
+            r#"<div data-ws-island="{island_id}" data-ws-component="{component}" data-ws-style="{scope_id}">{inner}</div>"#,
+            component = call.name
+        ))
+    } else {
+        Ok(format!(
+            "<div data-ws-island=\"{island_id}\" data-ws-component=\"{component}\">{inner}</div>",
+            component = call.name
+        ))
+    }
 }
 
 fn component_scope(
@@ -1288,9 +1367,34 @@ fn annotate_value_bindings(html: &str, bindings: &[ValueBinding]) -> String {
         if output.contains(&marker) {
             continue;
         }
-        if let Some(index) = output.find("data-ws-input") {
-            let insert_at = index + "data-ws-input".len();
-            output.insert_str(insert_at, &format!(" {marker}"));
+
+        let indexed_attrs = [
+            format!("data-ws-input=\"{}\"", binding.handler_index),
+            format!("data-ws-change=\"{}\"", binding.handler_index),
+        ];
+        let mut inserted = false;
+        for indexed in &indexed_attrs {
+            if let Some(pos) = output.find(indexed) {
+                let insert_at = pos + indexed.len();
+                output.insert_str(insert_at, &format!(" {marker}"));
+                inserted = true;
+                break;
+            }
+        }
+        if inserted {
+            continue;
+        }
+
+        if let Some(pos) = output.find("data-ws-input") {
+            let insert_at = pos + "data-ws-input".len();
+            if output[insert_at..].starts_with('=') {
+                if let Some(end) = output[insert_at + 1..].find('"') {
+                    let insert_at = insert_at + 1 + end + 1;
+                    output.insert_str(insert_at, &format!(" {marker}"));
+                }
+            } else {
+                output.insert_str(insert_at, &format!(" {marker}"));
+            }
         }
     }
     output
@@ -1540,6 +1644,27 @@ mod tests {
     }
 
     #[test]
+    fn renders_namespaced_component() {
+        let button = parse(
+            "@component UI.Button {\n  label: string = \"Click\"\n}\n\n<button>{label}</button>",
+        )
+        .expect("button");
+        let page = parse("@page \"/\"\n\n<UI.Button label=\"Save\" />").expect("page");
+        let mut components = ComponentRegistry::new();
+        components.insert("UI.Button".to_string(), button);
+
+        let output = render_with_components(
+            &page,
+            &Scope::new(),
+            &components,
+            &WebRuntime::new(),
+        )
+        .expect("rendered");
+
+        assert!(output.html.contains("<button>Save</button>"));
+    }
+
+    #[test]
     fn renders_client_counter_island() {
         let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
         let page = parse("@page \"/counter\"\n\n<Counter initial={5} label=\"Score\" />")
@@ -1586,7 +1711,8 @@ mod tests {
         assert!(output.html.contains("data-ws-if=\"open\""));
         assert_eq!(output.islands[0].if_bindings.len(), 1);
         let script = crate::client::render_island_script(&output.islands[0]);
-        assert!(script.contains("if_open_then"));
+        assert!(script.contains("if_open_then.forEach"));
+        assert!(output.html.contains("details-panel"));
     }
 
     #[test]
@@ -1604,10 +1730,38 @@ mod tests {
         )
         .expect("rendered");
 
-        assert!(output.html.contains("data-ws-input"));
-        assert!(output.html.contains("data-ws-value=\"name\""));
+        assert!(
+            output.html.contains("data-ws-input=\"0\" data-ws-value=\"name\"")
+                || output.html.contains("data-ws-value=\"name\" data-ws-input=\"0\"")
+        );
         let script = crate::client::render_island_script(&output.islands[0]);
         assert!(script.contains("addEventListener('input'"));
+        assert!(script.contains("value_name"));
+    }
+
+    #[test]
+    fn renders_event_demo_submit_prevent() {
+        let demo = parse(include_str!("../app/components/EventDemo.web")).expect("event demo");
+        let page = parse("@page \"/\"\n\n<EventDemo />").expect("page");
+        let mut components = ComponentRegistry::new();
+        components.insert("EventDemo".to_string(), demo);
+
+        let output = render_with_components(
+            &page,
+            &Scope::new(),
+            &components,
+            &WebRuntime::new(),
+        )
+        .expect("rendered");
+
+        assert!(output.html.contains("data-ws-submit=\"0\""));
+        assert!(
+            output.html.contains("data-ws-change=\"0\" data-ws-value=\"note\"")
+                || output.html.contains("data-ws-value=\"note\" data-ws-change=\"0\"")
+        );
+        let script = crate::client::render_island_script(&output.islands[0]);
+        assert!(script.contains("event.preventDefault();handlers.save(event)"));
+        assert!(script.contains("keyCount"));
     }
 
     #[tokio::test]
@@ -1662,5 +1816,72 @@ mod tests {
 
         assert!(output.html.contains("app-layout"));
         assert!(output.html.contains("<main><h1>Hello</h1></main>"));
+    }
+
+    #[test]
+    fn renders_scoped_component_styles() {
+        let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
+        let page = parse("@page \"/counter\"\n\n<Counter initial={5} label=\"Score\" />")
+            .expect("page");
+        let mut components = ComponentRegistry::new();
+        components.insert("Counter".to_string(), counter);
+
+        let output = render_with_components(
+            &page,
+            &Scope::new(),
+            &components,
+            &WebRuntime::new(),
+        )
+        .expect("rendered");
+
+        assert!(output.html.contains(r#"data-ws-style="Counter""#));
+        assert!(output.scoped_styles.contains_key("Counter"));
+        assert!(output
+            .scoped_styles
+            .get("Counter")
+            .expect("counter styles")
+            .contains(r#"[data-ws-style="Counter"] .counter"#));
+    }
+
+    #[test]
+    fn renders_global_page_styles() {
+        let page = parse(
+            "@page \"/demo\"\n\n<main class=\"demo\"></main>\n\n@style global {\n  body { margin: 0; }\n}",
+        )
+        .expect("page");
+
+        let output = render_with_components(
+            &page,
+            &Scope::new(),
+            &ComponentRegistry::new(),
+            &WebRuntime::new(),
+        )
+        .expect("rendered");
+
+        assert_eq!(output.global_styles.len(), 1);
+        assert!(output.global_styles[0].contains("body"));
+        assert!(output.scoped_styles.is_empty());
+    }
+
+    #[test]
+    fn dedupes_scoped_styles_for_multiple_component_instances() {
+        let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
+        let page = parse(
+            "@page \"/counter\"\n\n<Counter initial={1} />\n<Counter initial={2} />",
+        )
+        .expect("page");
+        let mut components = ComponentRegistry::new();
+        components.insert("Counter".to_string(), counter);
+
+        let output = render_with_components(
+            &page,
+            &Scope::new(),
+            &components,
+            &WebRuntime::new(),
+        )
+        .expect("rendered");
+
+        assert_eq!(output.scoped_styles.len(), 1);
+        assert_eq!(output.html.matches(r#"data-ws-style="Counter""#).count(), 2);
     }
 }

@@ -9,7 +9,7 @@
 <div class="greeting">
   <label>
     Name
-    <input @input={name = event.value} value={name} placeholder={placeholder} />
+    <input @input={|event| name = event.target.value} value={name} placeholder={placeholder} />
   </label>
   <p>Hello, {name}!</p>
 </div>

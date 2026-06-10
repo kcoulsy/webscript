@@ -226,13 +226,21 @@ Declares browser-only state.
 
 ### `@style`
 
-Defines component or page styles.
+Defines component or page styles. Place `@style` blocks **after markup** in the file.
 
 ```web
-@style scoped {
+@style {
   .card { padding: 1rem; }
 }
+
+@style global {
+  body { margin: 0; }
+}
 ```
+
+- `@style { }` — scoped to markup from that file (default)
+- `@style scoped { }` — same as `@style { }`
+- `@style global { }` — appended to the page as global CSS
 
 ## Runtime Directives
 

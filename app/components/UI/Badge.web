@@ -1,0 +1,41 @@
+@component UI.Badge {
+  text: string
+  variant: string = "default"
+}
+
+<span class="ui-badge" data-variant={variant}>{text}</span>
+
+@style {
+  .ui-badge {
+    display: inline-flex;
+    align-items: center;
+    border-radius: 9999px;
+    border: 1px solid transparent;
+    padding: 0.125rem 0.625rem;
+    font-size: 0.75rem;
+    font-weight: 600;
+    line-height: 1.25rem;
+    white-space: nowrap;
+  }
+
+  .ui-badge[data-variant="default"] {
+    background: var(--ui-primary);
+    color: var(--ui-primary-foreground);
+  }
+
+  .ui-badge[data-variant="secondary"] {
+    background: var(--ui-secondary);
+    color: var(--ui-secondary-foreground);
+  }
+
+  .ui-badge[data-variant="outline"] {
+    background: transparent;
+    color: var(--ui-foreground);
+    border-color: var(--ui-border);
+  }
+
+  .ui-badge[data-variant="destructive"] {
+    background: var(--ui-destructive);
+    color: var(--ui-destructive-foreground);
+  }
+}

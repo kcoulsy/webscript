@@ -4,6 +4,7 @@
   note: signal<string> = ""
   status: signal<string> = "idle"
   submitted: signal<bool> = false
+  keyCount: signal<int> = 0
 
   fn save() {
     submitted = true
@@ -21,17 +22,18 @@
   </form>
 
   @if submitted {
-    <p class="success">{status}</p>
+    <p class="success" style="color: #0a7a2f;">{status}</p>
   }
 
   <label>
-    Keyboard (@keydown, @focus, @blur)
+    Keyboard (@keydown increments counter; Enter saves)
     <input
-      @keydown={|event| event.key == "Enter" && save()}
+      @keydown={|event| { keyCount = keyCount + 1; event.key == "Enter" && save() }}
       @focus={|event| status = "focused"}
       @blur={status = "blurred"}
-      placeholder="Focus me, press Enter to save"
+      placeholder="Type here — watch key count"
     />
   </label>
+  <p>Keys pressed: {keyCount}</p>
   <p>Status: {status}</p>
 </div>

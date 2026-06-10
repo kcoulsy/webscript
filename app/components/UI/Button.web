@@ -1,0 +1,111 @@
+@component UI.Button {
+  label: string
+  variant: string = "default"
+  size: string = "default"
+  type: string = "button"
+  disabled: bool = false
+}
+
+@if disabled {
+  <button type={type} class="ui-button" data-variant={variant} data-size={size} disabled>
+    {label}
+  </button>
+} @else {
+  <button type={type} class="ui-button" data-variant={variant} data-size={size}>
+    {label}
+  </button>
+}
+
+@style {
+  .ui-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    white-space: nowrap;
+    border-radius: var(--ui-radius);
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.25rem;
+    transition: background 150ms ease, color 150ms ease, border-color 150ms ease, opacity 150ms ease;
+    cursor: pointer;
+    border: 1px solid transparent;
+    font-family: inherit;
+  }
+
+  .ui-button:disabled {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+
+  .ui-button[data-size="default"] {
+    height: 2.25rem;
+    padding: 0 1rem;
+  }
+
+  .ui-button[data-size="sm"] {
+    height: 2rem;
+    padding: 0 0.75rem;
+    font-size: 0.8125rem;
+  }
+
+  .ui-button[data-size="lg"] {
+    height: 2.5rem;
+    padding: 0 1.25rem;
+  }
+
+  .ui-button[data-size="icon"] {
+    height: 2.25rem;
+    width: 2.25rem;
+    padding: 0;
+  }
+
+  .ui-button[data-variant="default"] {
+    background: var(--ui-primary);
+    color: var(--ui-primary-foreground);
+  }
+
+  .ui-button[data-variant="default"]:hover {
+    opacity: 0.9;
+  }
+
+  .ui-button[data-variant="secondary"] {
+    background: var(--ui-secondary);
+    color: var(--ui-secondary-foreground);
+  }
+
+  .ui-button[data-variant="outline"] {
+    background: transparent;
+    color: var(--ui-foreground);
+    border-color: var(--ui-border);
+  }
+
+  .ui-button[data-variant="outline"]:hover {
+    background: var(--ui-accent);
+    color: var(--ui-accent-foreground);
+  }
+
+  .ui-button[data-variant="ghost"] {
+    background: transparent;
+    color: var(--ui-foreground);
+  }
+
+  .ui-button[data-variant="ghost"]:hover {
+    background: var(--ui-accent);
+    color: var(--ui-accent-foreground);
+  }
+
+  .ui-button[data-variant="destructive"] {
+    background: var(--ui-destructive);
+    color: var(--ui-destructive-foreground);
+  }
+
+  .ui-button[data-variant="link"] {
+    background: transparent;
+    color: var(--ui-primary);
+    text-decoration: underline;
+    text-underline-offset: 4px;
+    height: auto;
+    padding: 0;
+  }
+}

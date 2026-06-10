@@ -247,12 +247,15 @@ fn handle_connection(
                 metrics.tasks = trace.spans().to_vec();
             }
             metrics.set_total(started.elapsed());
+            let style_fragment =
+                crate::style::render_style_tags(&output.global_styles, &output.scoped_styles);
+            let html = crate::style::inject_styles(&output.html, &style_fragment);
             let client_scripts = output
                 .islands
                 .iter()
                 .map(render_island_script)
                 .collect::<String>();
-            let html = client::inject_client_scripts(&output.html, &client_scripts);
+            let html = client::inject_client_scripts(&html, &client_scripts);
             write_response_with_headers(
                 &mut stream,
                 200,

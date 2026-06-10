@@ -190,6 +190,27 @@ Lowercase tags are treated as HTML:
 <article></article>
 ```
 
+## Namespaced Components
+
+Organize components in subfolders and declare a qualified name with dot notation:
+
+```web
+# app/components/UI/button.web
+@component UI.Button {
+  label: string
+}
+
+<button>{label}</button>
+```
+
+Use the qualified name in templates:
+
+```web
+<UI.Button label="Save" />
+```
+
+Each dot-separated segment must be PascalCase (`UI.Button`, `UI.Forms.TextInput`). Folders under `app/components/` are for organization only — the registry key comes from the `@component` declaration, not the file path.
+
 ## Component Boundaries
 
 A component should own:

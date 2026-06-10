@@ -1,0 +1,63 @@
+@component UI.Card {
+  title: string = ""
+  description: string = ""
+  content: string = ""
+}
+
+<div class="ui-card">
+  @if title != "" || description != "" {
+    <div class="ui-card-header">
+      @if title != "" {
+        <h3 class="ui-card-title">{title}</h3>
+      }
+      @if description != "" {
+        <p class="ui-card-description">{description}</p>
+      }
+    </div>
+  }
+  @if content != "" {
+    <div class="ui-card-content">
+      <p>{content}</p>
+    </div>
+  }
+</div>
+
+@style {
+  .ui-card {
+    border-radius: calc(var(--ui-radius) + 2px);
+    border: 1px solid var(--ui-border);
+    background: var(--ui-card);
+    color: var(--ui-card-foreground);
+    box-shadow: 0 1px 2px color-mix(in srgb, var(--ui-foreground) 6%, transparent);
+  }
+
+  .ui-card-header {
+    display: flex;
+    flex-direction: column;
+    gap: 0.375rem;
+    padding: 1.5rem 1.5rem 0;
+  }
+
+  .ui-card-title {
+    margin: 0;
+    font-size: 1.125rem;
+    font-weight: 600;
+    line-height: 1.2;
+  }
+
+  .ui-card-description {
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--ui-muted-foreground);
+  }
+
+  .ui-card-content {
+    padding: 1.5rem;
+    font-size: 0.875rem;
+    line-height: 1.5;
+  }
+
+  .ui-card-content p {
+    margin: 0;
+  }
+}

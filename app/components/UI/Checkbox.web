@@ -1,0 +1,47 @@
+@component UI.Checkbox {
+  name: string = ""
+  label: string = ""
+  checked: bool = false
+  disabled: bool = false
+}
+
+<label class="ui-checkbox">
+  @if disabled && checked {
+    <input type="checkbox" name={name} checked disabled />
+  } @else if disabled {
+    <input type="checkbox" name={name} disabled />
+  } @else if checked {
+    <input type="checkbox" name={name} checked />
+  } @else {
+    <input type="checkbox" name={name} />
+  }
+  @if label != "" {
+    <span>{label}</span>
+  }
+</label>
+
+@style {
+  .ui-checkbox {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.875rem;
+    color: var(--ui-foreground);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .ui-checkbox input {
+    width: 1rem;
+    height: 1rem;
+    border-radius: calc(var(--ui-radius) - 2px);
+    border: 1px solid var(--ui-input);
+    accent-color: var(--ui-primary);
+    cursor: pointer;
+  }
+
+  .ui-checkbox input:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+}

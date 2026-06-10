@@ -27,6 +27,14 @@ pub struct WebFile {
     pub actions: Vec<ActionDecl>,
     pub lets: Vec<LetDecl>,
     pub template: Vec<TemplateNode>,
+    pub styles: Vec<StyleBlock>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StyleBlock {
+    pub global: bool,
+    pub css: String,
+    pub line: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -390,6 +398,13 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
             continue;
         }
 
+        if trimmed.starts_with("@style") {
+            return Err(parse_diagnostic_line(
+                line_number,
+                "@style must appear after markup",
+            ));
+        }
+
         template_start = Some(line_index);
         break;
     }
@@ -401,10 +416,29 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
         ));
     }
 
+    let mut styles = Vec::new();
     let template = match template_start {
         Some(start) => {
             let mut cursor = start;
-            parse_nodes(&lines, &mut cursor, false, &mut lets)?
+            let nodes = parse_nodes(&lines, &mut cursor, false, &mut lets)?;
+            while cursor < lines.len() {
+                let trimmed = lines[cursor].trim();
+                if trimmed.is_empty() {
+                    cursor += 1;
+                    continue;
+                }
+                if trimmed.starts_with("@style") {
+                    styles.push(parse_style(&lines, &mut cursor)?);
+                    continue;
+                }
+                return Err(parse_diagnostic(
+                    cursor + 1,
+                    1,
+                    lines[cursor].len().max(1),
+                    "only @style blocks are allowed after markup",
+                ));
+            }
+            nodes
         }
         None => Vec::new(),
     };
@@ -419,6 +453,7 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
         actions,
         lets,
         template,
+        styles,
     })
 }
 
@@ -467,6 +502,10 @@ fn parse_nodes(
             let declaration = collect_balanced_line(lines, cursor, trimmed)?;
             lets.push(parse_let(&declaration, line_number)?);
             continue;
+        }
+
+        if trimmed.starts_with("@style") {
+            break;
         }
 
         if trimmed.starts_with('@') && parse_event_directive(trimmed).is_none() {
@@ -857,6 +896,85 @@ fn parse_client_signal(line: &str, line_number: usize) -> Result<ClientSignalDec
         initial,
         line: line_number,
     })
+}
+
+fn parse_style(lines: &[&str], cursor: &mut usize) -> Result<StyleBlock, Diagnostic> {
+    let line_number = *cursor + 1;
+    let trimmed = lines[*cursor].trim();
+    let rest = trimmed
+        .strip_prefix("@style")
+        .ok_or_else(|| parse_diagnostic_line(line_number, "expected @style directive"))?
+        .trim();
+
+    let global = if rest == "{" {
+        false
+    } else if rest == "global {" {
+        true
+    } else if rest == "scoped {" {
+        false
+    } else {
+        return Err(parse_diagnostic_line(
+            line_number,
+            "@style expects `@style {`, `@style global {`, or `@style scoped {`",
+        ));
+    };
+
+    let header = lines[*cursor];
+    let brace_start = header
+        .find('{')
+        .ok_or_else(|| parse_diagnostic_line(line_number, "unclosed @style block"))?;
+
+    let mut depth = 0usize;
+    let mut css = String::new();
+    let mut line_index = *cursor;
+
+    for char in header[brace_start..].chars() {
+        if char == '{' {
+            depth += 1;
+            if depth == 1 {
+                continue;
+            }
+        } else if char == '}' {
+            depth -= 1;
+            if depth == 0 {
+                *cursor = line_index + 1;
+                return Ok(StyleBlock {
+                    global,
+                    css: css.trim().to_string(),
+                    line: line_number,
+                });
+            }
+        }
+        css.push(char);
+    }
+
+    line_index += 1;
+    while line_index < lines.len() {
+        let line = lines[line_index];
+        for char in line.chars() {
+            if char == '{' {
+                depth += 1;
+                css.push(char);
+            } else if char == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    *cursor = line_index + 1;
+                    return Ok(StyleBlock {
+                        global,
+                        css: css.trim().to_string(),
+                        line: line_number,
+                    });
+                }
+                css.push(char);
+            } else {
+                css.push(char);
+            }
+        }
+        css.push('\n');
+        line_index += 1;
+    }
+
+    Err(parse_diagnostic_line(line_number, "unclosed @style block"))
 }
 
 fn parse_server_directive(
@@ -1841,11 +1959,14 @@ fn is_identifier(value: &str) -> bool {
 }
 
 fn is_component_name(value: &str) -> bool {
-    value
-        .chars()
-        .next()
-        .is_some_and(|char| char.is_ascii_uppercase())
-        && is_identifier(value)
+    !value.is_empty()
+        && value.split('.').all(|segment| {
+            segment
+                .chars()
+                .next()
+                .is_some_and(|char| char.is_ascii_uppercase())
+                && is_identifier(segment)
+        })
 }
 
 #[cfg(test)]
@@ -2069,5 +2190,98 @@ mod tests {
             call.props[1].value,
             PropValue::Literal(Value::Int(1))
         ));
+    }
+
+    #[test]
+    fn parses_scoped_style_after_markup() {
+        let parsed = parse(
+            "@page \"/\"\n\n<div class=\"card\">Hi</div>\n\n@style {\n  .card { color: red; }\n}",
+        )
+        .expect("valid page");
+
+        assert_eq!(parsed.styles.len(), 1);
+        assert!(!parsed.styles[0].global);
+        assert!(parsed.styles[0].css.contains(".card"));
+        assert!(parsed.styles[0].css.contains("color: red"));
+    }
+
+    #[test]
+    fn parses_global_style_after_markup() {
+        let parsed = parse(
+            "@page \"/\"\n\n<main></main>\n\n@style global {\n  body { margin: 0; }\n}",
+        )
+        .expect("valid page");
+
+        assert_eq!(parsed.styles.len(), 1);
+        assert!(parsed.styles[0].global);
+        assert!(parsed.styles[0].css.contains("body"));
+    }
+
+    #[test]
+    fn parses_style_with_nested_braces() {
+        let parsed = parse(
+            "@component Card {}\n\n<div></div>\n\n@style {\n  @media (min-width: 600px) {\n    .card { color: blue; }\n  }\n}",
+        )
+        .expect("valid component");
+
+        assert_eq!(parsed.styles.len(), 1);
+        assert!(parsed.styles[0].css.contains("@media"));
+        assert!(parsed.styles[0].css.contains(".card"));
+    }
+
+    #[test]
+    fn rejects_style_before_markup() {
+        let error = parse("@page \"/\"\n\n@style {\n  .a {}\n}\n\n<p></p>")
+            .expect_err("style before markup should fail");
+
+        assert_eq!(error.message, "@style must appear after markup");
+    }
+
+    #[test]
+    fn rejects_markup_after_style() {
+        let error = parse("@page \"/\"\n\n<p></p>\n\n@style {\n  .a {}\n}\n<p>late</p>")
+            .expect_err("markup after style should fail");
+
+        assert_eq!(error.message, "only @style blocks are allowed after markup");
+    }
+
+    #[test]
+    fn parses_namespaced_component_declaration() {
+        let component = parse(
+            "@component UI.Button {\n  label: string = \"Click\"\n}\n\n<button>{label}</button>",
+        )
+        .expect("valid component");
+
+        let declaration = component.component.as_ref().expect("component");
+        assert_eq!(declaration.name, "UI.Button");
+        assert_eq!(declaration.props[0].name, "label");
+    }
+
+    #[test]
+    fn parses_namespaced_component_call() {
+        let page = parse("@page \"/\"\n\n<UI.Button label=\"Save\" />").expect("valid page");
+
+        let TemplateNode::Component(call) = &page.template[0] else {
+            panic!("expected component call");
+        };
+        assert_eq!(call.name, "UI.Button");
+        assert_eq!(call.props[0].name, "label");
+        assert!(matches!(
+            call.props[0].value,
+            PropValue::Literal(Value::String(ref label)) if label == "Save"
+        ));
+    }
+
+    #[test]
+    fn rejects_invalid_namespaced_component_declaration() {
+        let error = parse("@component ui.Button {\n  label: string\n}\n\n<button />")
+            .expect_err("lowercase namespace should fail");
+        assert!(error.message.contains("component name"));
+    }
+
+    #[test]
+    fn lowercase_dotted_tag_is_treated_as_html() {
+        let page = parse("@page \"/\"\n\n<ui.Button />").expect("valid page");
+        assert!(matches!(page.template[0], TemplateNode::Text(_)));
     }
 }

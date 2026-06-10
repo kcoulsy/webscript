@@ -1,0 +1,21 @@
+@component UI.Label {
+  text: string
+  target: string = ""
+}
+
+@if target != "" {
+  <label class="ui-label" for={target}>{text}</label>
+} @else {
+  <label class="ui-label">{text}</label>
+}
+
+@style {
+  .ui-label {
+    display: block;
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1;
+    color: var(--ui-foreground);
+    margin-bottom: 0.375rem;
+  }
+}

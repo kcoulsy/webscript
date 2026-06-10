@@ -1,0 +1,81 @@
+@page "/ui"
+
+@let roles: string[] = ["Admin", "Editor", "Viewer"]
+@let priorities: string[] = ["Low", "Medium", "High"]
+
+<main>
+  <h1>UI primitives</h1>
+  <p>shadcn-style building blocks under <code>app/components/UI/</code>.</p>
+
+  <section>
+    <h2>Buttons</h2>
+    <div style="display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center;">
+      <UI.Button label="Default" />
+      <UI.Button label="Secondary" variant="secondary" />
+      <UI.Button label="Outline" variant="outline" />
+      <UI.Button label="Ghost" variant="ghost" />
+      <UI.Button label="Destructive" variant="destructive" />
+      <UI.Button label="Link" variant="link" />
+      <UI.Button label="Small" size="sm" />
+      <UI.Button label="Large" size="lg" />
+      <UI.Button label="Disabled" disabled=true />
+    </div>
+  </section>
+
+  <UI.Separator />
+
+  <section>
+    <h2>Badges</h2>
+    <div style="display: flex; flex-wrap: wrap; gap: 0.5rem;">
+      <UI.Badge text="Default" />
+      <UI.Badge text="Secondary" variant="secondary" />
+      <UI.Badge text="Outline" variant="outline" />
+      <UI.Badge text="Destructive" variant="destructive" />
+    </div>
+  </section>
+
+  <UI.Separator />
+
+  <section>
+    <h2>Card</h2>
+    <UI.Card
+      title="Account settings"
+      description="Update your profile and preferences."
+      content="Use these primitives to compose forms and dashboards."
+    />
+  </section>
+
+  <UI.Separator />
+
+  <section>
+    <h2>Form fields</h2>
+    <form style="display: grid; gap: 1rem; max-width: 28rem;">
+      <div>
+        <UI.Label text="Name" target="demo-name" />
+        <UI.Input name="name" placeholder="Ada Lovelace" />
+      </div>
+
+      <div>
+        <UI.Label text="Role" target="demo-role" />
+        <UI.Select name="role" options={roles} placeholder="Choose a role" />
+      </div>
+
+      <div>
+        <UI.Label text="Priority" target="demo-priority" />
+        <UI.Select name="priority" value="Medium" options={priorities} />
+      </div>
+
+      <div>
+        <UI.Label text="Notes" target="demo-notes" />
+        <UI.Textarea name="notes" placeholder="Optional details..." />
+      </div>
+
+      <UI.Checkbox name="subscribe" label="Email me product updates" />
+
+      <div style="display: flex; gap: 0.75rem;">
+        <UI.Button label="Save changes" type="submit" />
+        <UI.Button label="Cancel" variant="outline" type="button" />
+      </div>
+    </form>
+  </section>
+</main>

@@ -13,3 +13,11 @@
   <button @click={count--}>-</button>
   <button @click={count = 0}>Reset</button>
 </div>
+
+@style {
+  .counter {
+    border: 1px solid #ccc;
+    padding: 0.5rem;
+    border-radius: 4px;
+  }
+}

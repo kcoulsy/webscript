@@ -225,8 +225,9 @@ pub fn render_island_script(manifest: &IslandManifest) -> String {
     for handler in &manifest.event_handlers {
         let attr = format!("data-ws-{}", handler.event);
         let param = &handler.param_name;
+        let var = format!("event_{}_{}", handler.event, handler.index);
         lines.push(format!(
-            "  const event_{index} = root.querySelector('[{attr}=\"{index}\"]');",
+            "  const {var} = root.querySelector('[{attr}=\"{index}\"]');",
             index = handler.index
         ));
         let event_name = js_event_name(&handler.event);
@@ -239,29 +240,30 @@ pub fn render_island_script(manifest: &IslandManifest) -> String {
         }
         body.push_str(&handler.js_body);
         lines.push(format!(
-            "  event_{index}?.addEventListener('{event_name}', ({param}) => {{ {body} }});",
-            index = handler.index,
+            "  {var}?.addEventListener('{event_name}', ({param}) => {{ {body} }});",
         ));
     }
 
     for if_binding in &manifest.if_bindings {
         let signal = &if_binding.signal;
         lines.push(format!(
-            "  const if_{signal}_then = root.querySelector('[data-ws-if=\"{signal}\"][data-ws-branch=\"then\"]');"
+            "  const if_{signal}_then = root.querySelectorAll('[data-ws-if=\"{signal}\"][data-ws-branch=\"then\"]');",
+            signal = signal
         ));
         lines.push(format!(
-            "  const if_{signal}_else = root.querySelector('[data-ws-if=\"{signal}\"][data-ws-branch=\"else\"]');"
+            "  const if_{signal}_else = root.querySelectorAll('[data-ws-if=\"{signal}\"][data-ws-branch=\"else\"]');",
+            signal = signal
         ));
         lines.push(format!(
             "  signals.{signal}.subscribe((value) => {{",
             signal = signal
         ));
         lines.push(format!(
-            "    if (if_{signal}_then) if_{signal}_then.style.display = value ? '' : 'none';",
+            "    if_{signal}_then.forEach((node) => {{ node.style.display = value ? '' : 'none'; }});",
             signal = signal
         ));
         lines.push(format!(
-            "    if (if_{signal}_else) if_{signal}_else.style.display = value ? 'none' : '';",
+            "    if_{signal}_else.forEach((node) => {{ node.style.display = value ? 'none' : ''; }});",
             signal = signal
         ));
         lines.push("  });".to_string());
@@ -340,6 +342,28 @@ fn resolve_handler_lambda(
     }
 
     Ok((DEFAULT_EVENT_PARAM.to_string(), source.to_string()))
+}
+
+pub fn value_signal_from_field_handler(handler_source: &str) -> Option<String> {
+    let body = if let Some((_, body)) = parse_client_lambda(handler_source) {
+        body
+    } else {
+        handler_source.trim().to_string()
+    };
+
+    let eq_index = find_assignment_equals(&body)?;
+    let left = body[..eq_index].trim();
+    let right = body[eq_index + 1..].trim();
+    if !is_identifier(left) {
+        return None;
+    }
+    if right == "event.value"
+        || right == "event.target.value"
+        || right.ends_with(".target.value")
+    {
+        return Some(left.to_string());
+    }
+    None
 }
 
 fn parse_client_lambda(source: &str) -> Option<(String, String)> {
@@ -473,7 +497,7 @@ fn compile_statements(
         return Err(invalid_handler("handler", source, line, column));
     }
 
-    Ok(compiled.join(" "))
+    Ok(compiled.join("; "))
 }
 
 fn compile_statement(
@@ -1041,6 +1065,18 @@ mod tests {
     }
 
     #[test]
+    fn value_signal_from_pipe_lambda_field_handler() {
+        assert_eq!(
+            value_signal_from_field_handler("|event| note = event.target.value"),
+            Some("note".to_string())
+        );
+        assert_eq!(
+            value_signal_from_field_handler("name = event.value"),
+            Some("name".to_string())
+        );
+    }
+
+    #[test]
     fn compiles_increment_handler() {
         let signals = BTreeSet::from(["count".to_string()]);
         let handlers = BTreeSet::new();
@@ -1124,7 +1160,7 @@ mod tests {
         .expect("handler body");
         assert_eq!(
             js,
-            "signals.count.set(0) signals.message.set(\"reset\")"
+            "signals.count.set(0); signals.message.set(\"reset\")"
         );
     }
 
@@ -1144,7 +1180,7 @@ mod tests {
         let handlers = BTreeSet::new();
         let compile_ctx = ctx(&signals, &handlers);
         let compiled = compile("|event| { a = 1; b = 2 }", &compile_ctx);
-        assert_eq!(compiled.js_body, "signals.a.set(1) signals.b.set(2)");
+        assert_eq!(compiled.js_body, "signals.a.set(1); signals.b.set(2)");
     }
 
     #[test]
