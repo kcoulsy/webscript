@@ -1,5 +1,6 @@
 use crate::client::{
-    build_event_handler, compile_handler_body, index_event_attributes, resolve_signal_initial,
+    build_event_handler, compile_handler_body, handler_body_is_async, index_event_attributes,
+    resolve_signal_initial,
     value_signal_from_field_handler, HandlerCompileContext, IfBinding, IslandManifest,
     NamedHandler, SignalBinding, TextBinding, ValueBinding,
 };
@@ -11,6 +12,7 @@ use crate::parser::{
 };
 use crate::style;
 use crate::runtime::WebRuntime;
+use crate::schema_runtime::SchemaRuntime;
 use crate::stmt::{self, BlockOutcome, Statement};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -32,6 +34,8 @@ struct RenderContext {
     island_counts: BTreeMap<String, usize>,
     global_styles: Vec<String>,
     scoped_styles: BTreeMap<String, String>,
+    page_route: String,
+    page_actions: BTreeMap<String, Option<String>>,
 }
 
 struct IslandBuildState<'a> {
@@ -40,6 +44,8 @@ struct IslandBuildState<'a> {
     handler_names: BTreeSet<String>,
     event_counts: BTreeMap<String, usize>,
     manifest: &'a mut IslandManifest,
+    page_actions: &'a BTreeMap<String, Option<String>>,
+    action_url: &'a str,
 }
 
 struct ClientValidateContext {
@@ -107,7 +113,7 @@ pub async fn render_page_async(
     runtime: &WebRuntime,
 ) -> Result<RenderOutput, Diagnostic> {
     let scope = scope_for_async(file, params, runtime).await?;
-    let mut context = RenderContext::default();
+    let mut context = page_render_context(file);
     let mut island = None;
     let mut forward_state = None;
     let shadowed = BTreeSet::new();
@@ -176,6 +182,24 @@ fn render_output(html: String, context: &RenderContext) -> RenderOutput {
         islands: context.islands.clone(),
         global_styles: context.global_styles.clone(),
         scoped_styles: context.scoped_styles.clone(),
+    }
+}
+
+fn page_render_context(file: &WebFile) -> RenderContext {
+    let page_route = file
+        .route
+        .as_ref()
+        .map(|route| route.raw.clone())
+        .unwrap_or_else(|| "/".to_string());
+    let page_actions = file
+        .actions
+        .iter()
+        .map(|action| (action.name.clone(), action.input_schema.clone()))
+        .collect();
+    RenderContext {
+        page_route,
+        page_actions,
+        ..RenderContext::default()
     }
 }
 
@@ -404,6 +428,50 @@ fn validate_server_block_statements(statements: &[Statement], diagnostics: &mut 
 pub enum ActionOutcome {
     Redirect(String),
     Fail(String),
+    Json(Value),
+}
+
+pub fn prepare_action_input(
+    action: &crate::parser::ActionDecl,
+    raw_input: &Scope,
+    schemas: Option<&SchemaRuntime>,
+) -> Result<Scope, Diagnostic> {
+    let mut input = raw_input.clone();
+    input.remove("_action");
+
+    let Some(schema_name) = &action.input_schema else {
+        return Ok(input);
+    };
+
+    let schemas = schemas.ok_or_else(|| {
+        Diagnostic::error(
+            Span::at(1, 1),
+            format!(
+                "action `{}` requires schema `{schema_name}` but schemas are unavailable",
+                action.name
+            ),
+            None,
+        )
+    })?;
+
+    let raw = Value::Object(input);
+    let validated = schemas.validate(schema_name, raw).map_err(|message| {
+        Diagnostic::error(
+            Span::identifier(1, 1, &action.name),
+            message,
+            None,
+        )
+    })?;
+
+    let Value::Object(fields) = validated else {
+        return Err(Diagnostic::error(
+            Span::identifier(1, 1, &action.name),
+            format!("schema `{schema_name}` must validate to an object"),
+            None,
+        ));
+    };
+
+    Ok(fields)
 }
 
 pub async fn execute_action(
@@ -425,11 +493,12 @@ pub async fn execute_action(
                 None,
             )
         })?;
+    let validated_input = prepare_action_input(action, input, runtime.schemas())?;
     let mut scope = Scope::new();
     for (name, value) in params {
         scope.insert(name.clone(), value.clone());
     }
-    scope.insert("input".to_string(), Value::Object(input.clone()));
+    scope.insert("input".to_string(), Value::Object(validated_input));
     scope.insert("session".to_string(), Value::Object(session.clone()));
 
     let outcome = runtime
@@ -439,7 +508,7 @@ pub async fn execute_action(
     Ok(match outcome {
         Some(BlockOutcome::Redirect(target)) => ActionOutcome::Redirect(target),
         Some(BlockOutcome::Fail(message)) => ActionOutcome::Fail(message),
-        Some(BlockOutcome::Return(_)) => ActionOutcome::Redirect(".".to_string()),
+        Some(BlockOutcome::Return(value)) => ActionOutcome::Json(value),
         None => ActionOutcome::Redirect(".".to_string()),
     })
 }
@@ -929,7 +998,10 @@ fn register_event_binding(
     let compile_ctx = HandlerCompileContext {
         signals: &island.signal_names,
         handlers: &island.handler_names,
+        page_actions: island.page_actions,
+        action_url: island.action_url,
         param: "event",
+        is_submit_context: binding.event == "submit",
     };
     let handler = build_event_handler(binding, index, &compile_ctx)?;
     if binding.event == "input" || binding.event == "change" {
@@ -1110,37 +1182,48 @@ fn render_client_component(
         handler_names.insert(handler.name.clone());
     }
 
-    let compile_ctx = HandlerCompileContext {
-        signals: &signal_names,
-        handlers: &handler_names,
-        param: "event",
-    };
+    let page_route = context.page_route.clone();
+    let page_actions = context.page_actions.clone();
     let mut named_handlers = Vec::new();
     for handler in &client.handlers {
-        let js_body = compile_handler_body(&handler.body, &compile_ctx, handler.line, 1)?;
+        let handler_ctx = HandlerCompileContext {
+            signals: &signal_names,
+            handlers: &handler_names,
+            page_actions: &page_actions,
+            action_url: &page_route,
+            param: handler.param_name.as_deref().unwrap_or("event"),
+            is_submit_context: false,
+        };
+        let js_body = compile_handler_body(&handler.body, &handler_ctx, handler.line, 1)?;
         named_handlers.push(NamedHandler {
             name: handler.name.clone(),
+            param_name: handler.param_name.clone().unwrap_or_default(),
             js_body,
+            is_async: handler_body_is_async(&handler.body),
         });
     }
 
     let mut manifest = IslandManifest {
         id: island_id.clone(),
         component: call.name.clone(),
+        action_url: page_route.clone(),
         signals: signal_bindings,
         event_handlers: Vec::new(),
         named_handlers,
         text_bindings: Vec::new(),
         value_bindings: Vec::new(),
+        html_bindings: Vec::new(),
         if_bindings: Vec::new(),
     };
 
     let mut island_state = IslandBuildState {
-        signal_names,
+        signal_names: signal_names.clone(),
         signal_types,
-        handler_names,
+        handler_names: handler_names.clone(),
         event_counts: BTreeMap::new(),
         manifest: &mut manifest,
+        page_actions: &page_actions,
+        action_url: &page_route,
     };
 
     let mut island_ref = Some(&mut island_state);
@@ -1160,6 +1243,14 @@ fn render_client_component(
 
     let inner = index_event_attributes(&inner, &manifest.event_handlers);
     let inner = annotate_value_bindings(&inner, &manifest.value_bindings);
+    for signal in &signal_names {
+        let marker = format!(r#"data-ws-html="{signal}""#);
+        if inner.contains(&marker) {
+            manifest.html_bindings.push(crate::client::HtmlBinding {
+                signal: signal.to_string(),
+            });
+        }
+    }
 
     context.islands.push(manifest);
 
@@ -1341,10 +1432,14 @@ fn validate_nodes(
                     Some(ctx) => (&ctx.signals, &ctx.handlers),
                     None => (&empty_signals, &empty_handlers),
                 };
+                let empty_actions = BTreeMap::new();
                 let compile_ctx = HandlerCompileContext {
                     signals,
                     handlers,
+                    page_actions: &empty_actions,
+                    action_url: "/",
                     param: "event",
+                    is_submit_context: binding.event == "submit",
                 };
                 if let Err(error) = build_event_handler(binding, 0, &compile_ctx) {
                     diagnostics.push(error);
@@ -1413,10 +1508,14 @@ fn validate_component_call(
         }
     } else if !call.event_bindings.is_empty() {
         let ctx = client_ctx.expect("client context checked");
+        let empty_actions = BTreeMap::new();
         let compile_ctx = HandlerCompileContext {
             signals: &ctx.signals,
             handlers: &ctx.handlers,
+            page_actions: &empty_actions,
+            action_url: "/",
             param: "event",
+            is_submit_context: false,
         };
         for binding in &call.event_bindings {
             if let Err(error) = build_event_handler(binding, 0, &compile_ctx) {

@@ -179,7 +179,15 @@ fn handle_connection(
             .map_err(io_diagnostic)?;
 
     if method == "POST" {
-        let input = form_scope(&request.body);
+        let is_fetch_action = request
+            .headers
+            .get("x-webscript-action")
+            .is_some_and(|value| value == "1");
+        let input = parse_post_input(
+            request.headers.get("content-type").map(String::as_str),
+            &request.body,
+        )
+        .map_err(io_diagnostic)?;
         let action_name = input
             .get("_action")
             .map(|value| value.render())
@@ -194,11 +202,36 @@ fn handle_connection(
             web_runtime,
         ));
         match action_result {
+            Ok(outcome) if is_fetch_action => {
+                if !matches!(outcome, render::ActionOutcome::Fail(_)) {
+                    save_session(sessions, &session_id, session).map_err(io_diagnostic)?;
+                }
+                write_action_json(
+                    &mut stream,
+                    path,
+                    &outcome,
+                    &session_id,
+                    is_new_session,
+                )
+                .map_err(io_diagnostic)?;
+                return Ok(());
+            }
             Ok(render::ActionOutcome::Redirect(target)) => {
                 save_session(sessions, &session_id, session).map_err(io_diagnostic)?;
                 write_redirect(
                     &mut stream,
                     &resolve_redirect(path, &target),
+                    &session_id,
+                    is_new_session,
+                )
+                .map_err(io_diagnostic)?;
+                return Ok(());
+            }
+            Ok(render::ActionOutcome::Json(_)) => {
+                save_session(sessions, &session_id, session).map_err(io_diagnostic)?;
+                write_redirect(
+                    &mut stream,
+                    &resolve_redirect(path, "."),
                     &session_id,
                     is_new_session,
                 )
@@ -381,6 +414,71 @@ fn split_request_target(target: &str) -> (&str, &str) {
 
 fn query_value(query: &str, name: &str) -> Option<String> {
     form_value(query, name)
+}
+
+fn parse_post_input(content_type: Option<&str>, body: &str) -> Result<render::Scope, String> {
+    if content_type
+        .is_some_and(|value| value.starts_with("application/json"))
+    {
+        return json_scope(body);
+    }
+    Ok(form_scope(body))
+}
+
+fn json_scope(body: &str) -> Result<render::Scope, String> {
+    let json: serde_json::Value =
+        serde_json::from_str(body).map_err(|error| format!("invalid JSON body: {error}"))?;
+    let serde_json::Value::Object(fields) = json else {
+        return Err("action JSON body must be an object".to_string());
+    };
+
+    let mut scope = render::Scope::new();
+    for (key, value) in fields {
+        scope.insert(
+            key,
+            crate::schema::json_value_to_parser(value)
+                .map_err(|error| format!("invalid JSON field: {error}"))?,
+        );
+    }
+    Ok(scope)
+}
+
+fn write_action_json(
+    stream: &mut TcpStream,
+    current_path: &str,
+    outcome: &render::ActionOutcome,
+    session_id: &str,
+    is_new_session: bool,
+) -> Result<(), String> {
+    let (status, body) = match outcome {
+        render::ActionOutcome::Redirect(target) => (
+            200,
+            serde_json::json!({
+                "redirect": resolve_redirect(current_path, target),
+            })
+            .to_string(),
+        ),
+        render::ActionOutcome::Fail(message) => (
+            422,
+            serde_json::json!({ "error": message }).to_string(),
+        ),
+        render::ActionOutcome::Json(value) => {
+            let data = crate::schema::parser_value_to_json(value)
+                .map_err(|error| format!("failed to serialize action result: {error}"))?;
+            (
+                200,
+                serde_json::json!({ "data": data }).to_string(),
+            )
+        }
+    };
+
+    write_response_with_headers(
+        stream,
+        status,
+        "application/json; charset=utf-8",
+        &body,
+        &session_headers(session_id, is_new_session),
+    )
 }
 
 fn form_scope(body: &str) -> render::Scope {

@@ -57,6 +57,7 @@ pub struct ClientBlock {
 #[derive(Debug, Clone)]
 pub struct ClientHandlerDecl {
     pub name: String,
+    pub param_name: Option<String>,
     pub body: String,
     pub line: usize,
 }
@@ -93,6 +94,7 @@ pub struct ServerBlock {
 #[derive(Debug, Clone)]
 pub struct ActionDecl {
     pub name: String,
+    pub input_schema: Option<String>,
     pub statements: Vec<Statement>,
 }
 
@@ -786,10 +788,28 @@ fn parse_client_handler(lines: &[&str], cursor: &mut usize) -> Result<ClientHand
         .split_once('{')
         .ok_or_else(|| parse_diagnostic_line(line_number, "client handler expects `fn name() {`"))?;
     let name_part = name_part.trim();
-    let name = name_part
-        .strip_suffix("()")
-        .ok_or_else(|| parse_diagnostic_line(line_number, "client handler expects `fn name() {`"))?
-        .trim();
+    let (name, param_name) = if let Some((name, params)) = name_part.split_once('(') {
+        let name = name.trim();
+        let params = params
+            .strip_suffix(')')
+            .ok_or_else(|| parse_diagnostic_line(line_number, "client handler expects `fn name() {`"))?
+            .trim();
+        if params.is_empty() {
+            (name, None)
+        } else if is_identifier(params) {
+            (name, Some(params.to_string()))
+        } else {
+            return Err(parse_diagnostic_line(
+                line_number,
+                "client handler supports a single parameter",
+            ));
+        }
+    } else {
+        return Err(parse_diagnostic_line(
+            line_number,
+            "client handler expects `fn name() {`",
+        ));
+    };
     if !is_identifier(name) {
         return Err(parse_diagnostic_line(
             line_number,
@@ -805,6 +825,7 @@ fn parse_client_handler(lines: &[&str], cursor: &mut usize) -> Result<ClientHand
             *cursor += 1;
             return Ok(ClientHandlerDecl {
                 name: name.to_string(),
+                param_name,
                 body: body_lines.join("\n"),
                 line: line_number,
             });
@@ -1012,17 +1033,11 @@ fn parse_action(lines: &[&str], cursor: &mut usize) -> Result<ActionDecl, Diagno
         .strip_prefix("@action")
         .expect("@action prefix already checked")
         .trim();
-    let name = header
+    let header = header
         .strip_suffix('{')
         .ok_or_else(|| parse_diagnostic_line(line_number, "@action expects `@action name {`"))?
         .trim();
-
-    if !is_identifier(name) {
-        return Err(parse_diagnostic_line(
-            line_number,
-            format!("invalid action name `{name}`"),
-        ));
-    }
+    let (name, input_schema) = parse_action_header(header, line_number)?;
 
     *cursor += 1;
     let statements =
@@ -1033,9 +1048,64 @@ fn parse_action(lines: &[&str], cursor: &mut usize) -> Result<ActionDecl, Diagno
     *cursor += 1;
 
     Ok(ActionDecl {
-        name: name.to_string(),
+        name,
+        input_schema,
         statements,
     })
+}
+
+fn parse_action_header(header: &str, line_number: usize) -> Result<(String, Option<String>), Diagnostic> {
+    let Some((name, rest)) = header.split_once('(') else {
+        let name = header.trim();
+        if !is_identifier(name) {
+            return Err(parse_diagnostic_line(
+                line_number,
+                format!("invalid action name `{name}`"),
+            ));
+        }
+        return Ok((name.to_string(), None));
+    };
+
+    let name = name.trim();
+    if !is_identifier(name) {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("invalid action name `{name}`"),
+        ));
+    }
+
+    let rest = rest
+        .strip_suffix(')')
+        .ok_or_else(|| {
+            parse_diagnostic_line(
+                line_number,
+                "@action expects `@action name(input: SchemaName) {`",
+            )
+        })?
+        .trim();
+    let (param_name, schema_name) = rest
+        .split_once(':')
+        .ok_or_else(|| {
+            parse_diagnostic_line(
+                line_number,
+                "@action expects `@action name(input: SchemaName) {`",
+            )
+        })?;
+    if param_name.trim() != "input" {
+        return Err(parse_diagnostic_line(
+            line_number,
+            "@action input parameter must be named `input`",
+        ));
+    }
+    let schema_name = schema_name.trim();
+    if !is_identifier(schema_name) {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("invalid action input schema `{schema_name}`"),
+        ));
+    }
+
+    Ok((name.to_string(), Some(schema_name.to_string())))
 }
 
 fn parse_do(lines: &[&str], cursor: &mut usize) -> Result<TemplateNode, Diagnostic> {
@@ -2115,7 +2185,22 @@ mod tests {
         .expect("valid page");
 
         assert_eq!(parsed.actions[0].name, "increment");
+        assert_eq!(parsed.actions[0].input_schema, None);
         assert_eq!(parsed.actions[0].statements.len(), 3);
+    }
+
+    #[test]
+    fn parses_action_input_schema() {
+        let parsed = parse(
+            "@page \"/\"\n\n@action rememberName(input: ProfileInput) {\n  redirect(\"/\")\n}\n\n<p>ok</p>",
+        )
+        .expect("valid page");
+
+        assert_eq!(parsed.actions[0].name, "rememberName");
+        assert_eq!(
+            parsed.actions[0].input_schema.as_deref(),
+            Some("ProfileInput")
+        );
     }
 
     #[test]

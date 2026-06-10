@@ -1,0 +1,3 @@
+@schema AddTodoInput {
+  title: string @min(1)
+}

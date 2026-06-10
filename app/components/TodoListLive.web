@@ -1,0 +1,100 @@
+@component TodoListLive {}
+
+@client {
+  count: signal<int> = 0
+  listHtml: signal<string> = ""
+  title: signal<string> = ""
+  error: signal<string> = ""
+
+  fn applyTodos(todos) {
+    count = todos.length
+    listHtml = WebScript.renderTodos(todos)
+    error = ""
+  }
+
+  fn loadInitial() {
+    let todos = await action('listTodos')
+    applyTodos(todos)
+  }
+
+  fn addTodo() {
+    let todos = await action('addTodo', { title: title })
+    applyTodos(todos)
+    title = ""
+  }
+
+  fn completeTodo(id) {
+    let todos = await action('completeTodo', { id: id })
+    applyTodos(todos)
+  }
+
+  fn resetTodos() {
+    let todos = await action('resetTodos')
+    applyTodos(todos)
+  }
+}
+
+<div class="todo-live">
+  <form @submit.prevent={addTodo} class="form-stack">
+    <UI.Label text="New todo" target="live-todo-title" />
+    <UI.Input
+      id="live-todo-title"
+      name="title"
+      placeholder="Ship something small"
+      value={title}
+      @input={|event| title = event.target.value}
+    />
+    <UI.Button label="Add todo" type="submit" />
+  </form>
+
+  <p class="todo-live-meta">{count} todo(s)</p>
+  @if error != "" {
+    <p class="todo-live-error">{error}</p>
+  }
+
+  <div class="todo-live-list" data-ws-html="listHtml"></div>
+
+  <div class="button-row">
+    <UI.Button label="Reset list" variant="destructive" size="sm" @click={resetTodos} />
+  </div>
+</div>
+
+@style {
+  .todo-live {
+    display: grid;
+    gap: 0.75rem;
+    max-width: 36rem;
+  }
+
+  .todo-live-meta {
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--ui-muted-foreground);
+  }
+
+  .todo-live-error {
+    margin: 0;
+    font-size: 0.875rem;
+    color: #b42318;
+  }
+
+  .todo-live-list .todo-item {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid var(--ui-border);
+  }
+
+  .todo-live-list .todo-item p {
+    margin: 0;
+    flex: 1;
+    font-size: 0.9375rem;
+  }
+
+  .todo-empty {
+    margin: 0;
+    color: var(--ui-muted-foreground);
+    font-size: 0.875rem;
+  }
+}

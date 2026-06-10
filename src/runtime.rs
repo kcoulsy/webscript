@@ -73,6 +73,10 @@ impl WebRuntime {
         }
     }
 
+    pub fn schemas(&self) -> Option<&SchemaRuntime> {
+        self.schemas.as_deref()
+    }
+
     pub async fn execute_block_async(
         &self,
         statements: &[Statement],

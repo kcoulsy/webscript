@@ -1,0 +1,30 @@
+@page "/todos/live"
+
+@action listTodos {
+  return await Todo.all()
+}
+
+@action addTodo(input: AddTodoInput) {
+  await Todo.create(input)
+  return await Todo.all()
+}
+
+@action completeTodo(input: CompleteTodoInput) {
+  await Todo.update(input.id, { done: true })
+  return await Todo.all()
+}
+
+@action resetTodos {
+  await Todo.deleteAll()
+  return []
+}
+
+<main>
+  <h1>Live todos</h1>
+  <p>
+  Client island state updates after server <code>@action</code> calls — no full page reload.
+  Compare with the <a href="/todos">classic form-based todos page</a>.
+  </p>
+
+  <TodoListLive />
+</main>

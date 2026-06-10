@@ -160,6 +160,33 @@ pub fn validate_value(schema: &SchemaDecl, value: &Value) -> Result<Value, Strin
     Ok(Value::Object(output))
 }
 
+pub fn parser_value_to_json(value: &Value) -> Result<serde_json::Value, String> {
+    match value {
+        Value::String(text) => Ok(serde_json::Value::String(text.clone())),
+        Value::Int(number) => Ok(serde_json::Value::Number(
+            serde_json::Number::from(*number),
+        )),
+        Value::Bool(flag) => Ok(serde_json::Value::Bool(*flag)),
+        Value::Object(fields) => {
+            let mut output = serde_json::Map::new();
+            for (name, field) in fields {
+                output.insert(name.clone(), parser_value_to_json(field)?);
+            }
+            Ok(serde_json::Value::Object(output))
+        }
+        Value::Array { values, .. } => {
+            let mut output = Vec::with_capacity(values.len());
+            for item in values {
+                output.push(parser_value_to_json(item)?);
+            }
+            Ok(serde_json::Value::Array(output))
+        }
+        Value::Duration { .. } => Err("cannot serialize duration to JSON".to_string()),
+        Value::Function { .. } => Err("cannot serialize function to JSON".to_string()),
+        Value::Promise { .. } => Err("cannot serialize promise to JSON".to_string()),
+    }
+}
+
 pub fn json_value_to_parser(value: serde_json::Value) -> Result<Value, String> {
     match value {
         serde_json::Value::Null => Ok(Value::String(String::new())),
@@ -679,6 +706,17 @@ mod tests {
     #[test]
     fn rejects_unknown_type() {
         parse_schemas("@schema User {\n  id: uuid\n}").expect_err("unknown type");
+    }
+
+    #[test]
+    fn parser_value_round_trips_through_json() {
+        let value = Value::Object(BTreeMap::from([
+            ("title".to_string(), Value::String("Ship".to_string())),
+            ("done".to_string(), Value::Bool(false)),
+        ]));
+        let json = parser_value_to_json(&value).expect("json");
+        let parsed = json_value_to_parser(json).expect("parser");
+        assert_eq!(value, parsed);
     }
 
     #[test]

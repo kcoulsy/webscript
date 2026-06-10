@@ -1,6 +1,6 @@
 use crate::diagnostic::{Diagnostic, Span};
 use crate::parser::{ClientInitial, ClientSignalDecl, EventBinding, Value};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub const RUNTIME_PATH: &str = "/.web/runtime.js";
 const DEFAULT_EVENT_PARAM: &str = "event";
@@ -9,11 +9,13 @@ const DEFAULT_EVENT_PARAM: &str = "event";
 pub struct IslandManifest {
     pub id: String,
     pub component: String,
+    pub action_url: String,
     pub signals: Vec<SignalBinding>,
     pub event_handlers: Vec<EventHandler>,
     pub named_handlers: Vec<NamedHandler>,
     pub text_bindings: Vec<TextBinding>,
     pub value_bindings: Vec<ValueBinding>,
+    pub html_bindings: Vec<HtmlBinding>,
     pub if_bindings: Vec<IfBinding>,
 }
 
@@ -27,7 +29,9 @@ pub struct SignalBinding {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NamedHandler {
     pub name: String,
+    pub param_name: String,
     pub js_body: String,
+    pub is_async: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -53,6 +57,11 @@ pub struct ValueBinding {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HtmlBinding {
+    pub signal: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct IfBinding {
     pub signal: String,
 }
@@ -61,7 +70,10 @@ pub struct IfBinding {
 pub struct HandlerCompileContext<'a> {
     pub signals: &'a BTreeSet<String>,
     pub handlers: &'a BTreeSet<String>,
+    pub page_actions: &'a BTreeMap<String, Option<String>>,
+    pub action_url: &'a str,
     pub param: &'a str,
+    pub is_submit_context: bool,
 }
 
 pub fn client_runtime_script() -> &'static str {
@@ -81,6 +93,59 @@ WebScript.signal = (initial) => {
       return () => listeners.delete(listener);
     },
   };
+};
+WebScript.escapeHtml = (value) => String(value)
+  .replaceAll("&", "&amp;")
+  .replaceAll("<", "&lt;")
+  .replaceAll(">", "&gt;")
+  .replaceAll("\"", "&quot;");
+WebScript.renderTodos = (todos) => {
+  if (!Array.isArray(todos) || todos.length === 0) {
+    return '<p class="todo-empty">No todos yet.</p>';
+  }
+  return todos.map((todo) => {
+    const title = WebScript.escapeHtml(todo.title ?? "");
+    const badge = todo.done
+      ? '<span class="ui-badge ui-badge-secondary">Done</span>'
+      : '<span class="ui-badge ui-badge-outline">Next</span>';
+  const complete = todo.done
+      ? ""
+      : `<button type="button" class="ui-button ui-button-outline ui-button-sm" data-ws-handler="completeTodo" data-ws-handler-arg="${todo.id}">Mark done</button>`;
+    return `<article class="todo-item">${badge}<p>${title}</p>${complete}</article>`;
+  }).join("");
+};
+WebScript.action = async (url, name, input) => {
+  let body;
+  let headers = {
+    Accept: "application/json",
+    "X-WebScript-Action": "1",
+  };
+  if (input instanceof FormData) {
+    input.set("_action", name);
+    body = new URLSearchParams(input).toString();
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
+  } else if (input && typeof input === "object") {
+    body = JSON.stringify({ _action: name, ...input });
+    headers["Content-Type"] = "application/json";
+  } else {
+    body = new URLSearchParams({ _action: name }).toString();
+    headers["Content-Type"] = "application/x-www-form-urlencoded";
+  }
+  const response = await fetch(url, {
+    method: "POST",
+    headers,
+    body,
+    credentials: "same-origin",
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload.error ?? "Action failed");
+  }
+  if (payload.redirect) {
+    window.location.assign(payload.redirect);
+    return null;
+  }
+  return payload.data ?? null;
 };
 "#
 }
@@ -117,6 +182,10 @@ pub fn compile_handler_body(
     compile_statements(source, ctx, line, column)
 }
 
+pub fn handler_body_is_async(source: &str) -> bool {
+    source.contains("await ")
+}
+
 pub struct CompiledHandler {
     pub param_name: String,
     pub js_body: String,
@@ -133,7 +202,10 @@ pub fn compile_event_handler(
     let lambda_ctx = HandlerCompileContext {
         signals: ctx.signals,
         handlers: ctx.handlers,
+        page_actions: ctx.page_actions,
+        action_url: ctx.action_url,
         param: &param,
+        is_submit_context: ctx.is_submit_context,
     };
     let js_body = compile_lambda_body(&body, &lambda_ctx, line, column)?;
     Ok(CompiledHandler {
@@ -180,16 +252,28 @@ pub fn render_island_script(manifest: &IslandManifest) -> String {
             manifest.id
         ),
         "  if (!root) return;".to_string(),
-        format!("  const signals = {{ {} }};", signal_inits.join(", ")),
     ];
+    if !manifest.action_url.is_empty() {
+        lines.push(format!(
+            "  const actionUrl = {};",
+            js_string_literal(&manifest.action_url)
+        ));
+    }
+    lines.push(format!("  const signals = {{ {} }};", signal_inits.join(", ")));
 
     if !manifest.named_handlers.is_empty() {
         let mut handler_entries = Vec::new();
         for handler in &manifest.named_handlers {
+            let params = if handler.param_name.is_empty() {
+                "event".to_string()
+            } else {
+                handler.param_name.clone()
+            };
+            let fn_kw = if handler.is_async { "async " } else { "" };
             handler_entries.push(format!(
-                "    {name}: (event) => {{ {body} }}",
+                "    {name}: {fn_kw}({params}) => {{ {body} }}",
                 name = handler.name,
-                body = handler.js_body
+                body = handler.js_body,
             ));
         }
         lines.push(format!(
@@ -222,6 +306,17 @@ pub fn render_island_script(manifest: &IslandManifest) -> String {
         ));
     }
 
+    for html in &manifest.html_bindings {
+        lines.push(format!(
+            "  const html_{signal} = root.querySelector('[data-ws-html=\"{signal}\"]');",
+            signal = html.signal
+        ));
+        lines.push(format!(
+            "  signals.{signal}.subscribe((next) => {{ if (html_{signal}) html_{signal}.innerHTML = String(next); }});",
+            signal = html.signal
+        ));
+    }
+
     for handler in &manifest.event_handlers {
         let attr = format!("data-ws-{}", handler.event);
         let param = &handler.param_name;
@@ -239,10 +334,26 @@ pub fn render_island_script(manifest: &IslandManifest) -> String {
             body.push_str(&format!("{param}.stopPropagation();"));
         }
         body.push_str(&handler.js_body);
+        let listener = if handler.js_body.contains("await ") {
+            format!("({param}) => {{ void (async () => {{ {body} }})(); }}")
+        } else {
+            format!("({param}) => {{ {body} }}")
+        };
         lines.push(format!(
-            "  {var}?.addEventListener('{event_name}', ({param}) => {{ {body} }});",
+            "  {var}?.addEventListener('{event_name}', {listener});",
         ));
     }
+
+    lines.push("  root.addEventListener('click', (event) => {".to_string());
+    lines.push("    const node = event.target.closest('[data-ws-handler]');".to_string());
+    lines.push("    if (!node) return;".to_string());
+    lines.push("    const name = node.getAttribute('data-ws-handler');".to_string());
+    lines.push("    const arg = node.getAttribute('data-ws-handler-arg');".to_string());
+    lines.push("    if (!name || !handlers[name]) return;".to_string());
+    lines.push("    event.preventDefault();".to_string());
+    lines.push("    void handlers[name](arg ?? event);".to_string());
+    lines.push("  });".to_string());
+    lines.push("  if (handlers.loadInitial) { void handlers.loadInitial(); }".to_string());
 
     for if_binding in &manifest.if_bindings {
         let signal = &if_binding.signal;
@@ -272,6 +383,10 @@ pub fn render_island_script(manifest: &IslandManifest) -> String {
     lines.push("})();".to_string());
     lines.push("</script>".to_string());
     lines.join("\n")
+}
+
+fn js_string_literal(value: &str) -> String {
+    format!("\"{}\"", escape_js_string(value))
 }
 
 pub fn inject_client_scripts(html: &str, scripts: &str) -> String {
@@ -510,6 +625,17 @@ fn compile_statement(
         return Ok(js);
     }
 
+    if let Some(rest) = source.strip_prefix("let ") {
+        if let Some(eq_index) = find_assignment_equals(rest) {
+            let name = rest[..eq_index].trim();
+            let right = rest[eq_index + 1..].trim();
+            if is_identifier(name) {
+                let expr = compile_expression(right, ctx, line, column)?;
+                return Ok(format!("const {name} = {expr}"));
+            }
+        }
+    }
+
     if let Some(eq_index) = find_assignment_equals(source) {
         let left = source[..eq_index].trim();
         let right = source[eq_index + 1..].trim();
@@ -520,6 +646,58 @@ fn compile_statement(
     }
 
     compile_expression(source, ctx, line, column)
+}
+
+fn compile_action_call(
+    args: &[String],
+    ctx: &HandlerCompileContext<'_>,
+) -> Result<String, Diagnostic> {
+    let Some(action_name) = args.first() else {
+        return Err(Diagnostic::error(
+            Span::at(1, 1),
+            "action() requires an action name",
+            None,
+        ));
+    };
+    let Some(action_key) = action_name_from_arg(action_name) else {
+        return Err(Diagnostic::error(
+            Span::at(1, 1),
+            "action() name must be a string literal",
+            None,
+        ));
+    };
+    if !ctx.page_actions.contains_key(&action_key) {
+        return Err(Diagnostic::error(
+            Span::at(1, 1),
+            format!("unknown page action `{action_key}`"),
+            None,
+        ));
+    }
+
+    let input = if args.len() >= 2 {
+        args[1].clone()
+    } else if ctx.is_submit_context {
+        format!(
+            "{}.target && {}.target.tagName === 'FORM' ? Object.fromEntries(new FormData({}.target)) : null",
+            ctx.param, ctx.param, ctx.param
+        )
+    } else {
+        "null".to_string()
+    };
+
+    Ok(format!(
+        "WebScript.action(actionUrl, {action_name}, {input})"
+    ))
+}
+
+fn action_name_from_arg(arg: &str) -> Option<String> {
+    let trimmed = arg.trim();
+    if (trimmed.starts_with('"') && trimmed.ends_with('"'))
+        || (trimmed.starts_with('\'') && trimmed.ends_with('\''))
+    {
+        return Some(trimmed[1..trimmed.len() - 1].to_string());
+    }
+    None
 }
 
 fn compile_expression(
@@ -696,6 +874,10 @@ impl ExprParser<'_, '_> {
     }
 
     fn parse_unary(&mut self) -> Result<String, Diagnostic> {
+        if self.match_lexeme("await") {
+            let value = self.parse_unary()?;
+            return Ok(format!("await {value}"));
+        }
         if self.match_lexeme("!") {
             let value = self.parse_unary()?;
             return Ok(format!("(!{value})"));
@@ -741,15 +923,22 @@ impl ExprParser<'_, '_> {
             } else if self.match_lexeme("(") {
                 let args = self.parse_call_args()?;
                 self.expect_lexeme(")")?;
-                if let Some(name) = value.strip_prefix("handlers.") {
+                if value == "action" {
+                    value = compile_action_call(&args, self.ctx)?;
+                } else if let Some(name) = value.strip_prefix("handlers.") {
                     let call_args = if args.is_empty() {
                         param.to_string()
                     } else {
                         args.join(", ")
                     };
                     value = format!("handlers.{name}({call_args})");
-                } else if self.ctx.handlers.contains(&value) && args.is_empty() {
-                    value = format!("handlers.{value}({param})");
+                } else if self.ctx.handlers.contains(&value) {
+                    let call_args = if args.is_empty() {
+                        param.to_string()
+                    } else {
+                        args.join(", ")
+                    };
+                    value = format!("handlers.{value}({call_args})");
                 } else {
                     value = format!("{value}({})", args.join(", "));
                 }
@@ -760,11 +949,32 @@ impl ExprParser<'_, '_> {
         Ok(value)
     }
 
+    fn parse_object_literal(&mut self) -> Result<String, Diagnostic> {
+        let mut fields = Vec::new();
+        if !self.match_lexeme("}") {
+            loop {
+                let key = self.expect_ident("field")?;
+                self.expect_lexeme(":")?;
+                let value = self.parse_or()?;
+                fields.push(format!("{key}: {value}"));
+                if !self.match_lexeme(",") {
+                    break;
+                }
+            }
+            self.expect_lexeme("}")?;
+        }
+        Ok(format!("{{ {} }}", fields.join(", ")))
+    }
+
     fn parse_primary(&mut self) -> Result<String, Diagnostic> {
         if self.match_lexeme("(") {
             let value = self.parse_or()?;
             self.expect_lexeme(")")?;
             return Ok(value);
+        }
+
+        if self.match_lexeme("{") {
+            return self.parse_object_literal();
         }
 
         let Some(token) = self.bump() else {
@@ -939,6 +1149,9 @@ fn tokenize(source: &str, line: usize, column: usize) -> Result<Vec<Token>, Diag
                     '/' => "/",
                     '(' => "(",
                     ')' => ")",
+                    '{' => "{",
+                    '}' => "}",
+                    ':' => ":",
                     '.' => ".",
                     ',' => ",",
                     '!' => "!",
@@ -1052,11 +1265,15 @@ mod tests {
     fn ctx<'a>(
         signals: &'a BTreeSet<String>,
         handlers: &'a BTreeSet<String>,
+        page_actions: &'a BTreeMap<String, Option<String>>,
     ) -> HandlerCompileContext<'a> {
         HandlerCompileContext {
             signals,
             handlers,
+            page_actions,
+            action_url: "/",
             param: DEFAULT_EVENT_PARAM,
+            is_submit_context: false,
         }
     }
 
@@ -1080,7 +1297,8 @@ mod tests {
     fn compiles_increment_handler() {
         let signals = BTreeSet::from(["count".to_string()]);
         let handlers = BTreeSet::new();
-        let compile_ctx = ctx(&signals, &handlers);
+        let page_actions = BTreeMap::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let compiled = compile("count++", &compile_ctx);
         assert_eq!(
             compiled.js_body,
@@ -1093,7 +1311,8 @@ mod tests {
     fn compiles_bool_toggle_handler() {
         let signals = BTreeSet::from(["open".to_string()]);
         let handlers = BTreeSet::new();
-        let compile_ctx = ctx(&signals, &handlers);
+        let page_actions = BTreeMap::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let compiled = compile("open = !open", &compile_ctx);
         assert_eq!(compiled.js_body, "signals.open.set(!signals.open.get())");
     }
@@ -1102,7 +1321,8 @@ mod tests {
     fn compiles_input_handler() {
         let signals = BTreeSet::from(["name".to_string()]);
         let handlers = BTreeSet::new();
-        let compile_ctx = ctx(&signals, &handlers);
+        let page_actions = BTreeMap::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let compiled = compile("name = event.value", &compile_ctx);
         assert_eq!(compiled.js_body, "signals.name.set(event.target.value)");
     }
@@ -1111,7 +1331,8 @@ mod tests {
     fn compiles_reset_handler() {
         let signals = BTreeSet::from(["count".to_string()]);
         let handlers = BTreeSet::new();
-        let compile_ctx = ctx(&signals, &handlers);
+        let page_actions = BTreeMap::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let compiled = compile("count = 0", &compile_ctx);
         assert_eq!(compiled.js_body, "signals.count.set(0)");
     }
@@ -1120,7 +1341,8 @@ mod tests {
     fn compiles_named_handler_reference() {
         let signals = BTreeSet::new();
         let handlers = BTreeSet::from(["save".to_string()]);
-        let compile_ctx = ctx(&signals, &handlers);
+        let page_actions = BTreeMap::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let compiled = compile_event_handler("submit", "save", 1, 1, &compile_ctx).expect("handler");
         assert_eq!(compiled.js_body, "handlers.save(event)");
     }
@@ -1129,7 +1351,8 @@ mod tests {
     fn compiles_general_expression_assignment() {
         let signals = BTreeSet::from(["count".to_string(), "message".to_string()]);
         let handlers = BTreeSet::new();
-        let compile_ctx = ctx(&signals, &handlers);
+        let page_actions = BTreeMap::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let compiled = compile("message = \"Count: \" + count", &compile_ctx);
         assert_eq!(
             compiled.js_body,
@@ -1141,7 +1364,8 @@ mod tests {
     fn compiles_event_key_expression() {
         let signals = BTreeSet::from(["log".to_string()]);
         let handlers = BTreeSet::new();
-        let compile_ctx = ctx(&signals, &handlers);
+        let page_actions = BTreeMap::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let compiled = compile("log = \"Key: \" + event.key", &compile_ctx);
         assert_eq!(compiled.js_body, "signals.log.set((\"Key: \" + event.key))");
     }
@@ -1150,7 +1374,8 @@ mod tests {
     fn compiles_handler_body_with_multiple_statements() {
         let signals = BTreeSet::from(["count".to_string(), "message".to_string()]);
         let handlers = BTreeSet::new();
-        let compile_ctx = ctx(&signals, &handlers);
+        let page_actions = BTreeMap::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let js = compile_handler_body(
             "count = 0\nmessage = \"reset\"",
             &compile_ctx,
@@ -1168,7 +1393,8 @@ mod tests {
     fn compiles_pipe_lambda_with_custom_param() {
         let signals = BTreeSet::from(["count".to_string()]);
         let handlers = BTreeSet::new();
-        let compile_ctx = ctx(&signals, &handlers);
+        let page_actions = BTreeMap::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let compiled = compile("|e| count++", &compile_ctx);
         assert_eq!(compiled.param_name, "e");
         assert_eq!(compiled.js_body, "signals.count.set(signals.count.get() + 1)");
@@ -1178,7 +1404,8 @@ mod tests {
     fn compiles_pipe_lambda_block_body() {
         let signals = BTreeSet::from(["a".to_string(), "b".to_string()]);
         let handlers = BTreeSet::new();
-        let compile_ctx = ctx(&signals, &handlers);
+        let page_actions = BTreeMap::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let compiled = compile("|event| { a = 1; b = 2 }", &compile_ctx);
         assert_eq!(compiled.js_body, "signals.a.set(1); signals.b.set(2)");
     }
@@ -1187,7 +1414,8 @@ mod tests {
     fn compiles_pipe_lambda_with_event_key() {
         let signals = BTreeSet::from(["log".to_string()]);
         let handlers = BTreeSet::from(["save".to_string()]);
-        let compile_ctx = ctx(&signals, &handlers);
+        let page_actions = BTreeMap::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let compiled = compile("|event| event.key == \"Enter\" && save()", &compile_ctx);
         assert_eq!(
             compiled.js_body,
@@ -1230,6 +1458,7 @@ mod tests {
         let manifest = IslandManifest {
             id: "Counter-0".to_string(),
             component: "Counter".to_string(),
+            action_url: "/counter".to_string(),
             signals: vec![SignalBinding {
                 name: "count".to_string(),
                 type_name: "int".to_string(),
@@ -1249,6 +1478,7 @@ mod tests {
                 signal: "count".to_string(),
             }],
             value_bindings: Vec::new(),
+            html_bindings: Vec::new(),
             if_bindings: Vec::new(),
         };
 
@@ -1261,10 +1491,38 @@ mod tests {
     }
 
     #[test]
+    fn compiles_action_call_with_object_literal() {
+        let signals = BTreeSet::from(["title".to_string()]);
+        let handlers = BTreeSet::new();
+        let page_actions = BTreeMap::from([(
+            "addTodo".to_string(),
+            Some("AddTodoInput".to_string()),
+        )]);
+        let compile_ctx = HandlerCompileContext {
+            signals: &signals,
+            handlers: &handlers,
+            page_actions: &page_actions,
+            action_url: "/todos/live",
+            param: "event",
+            is_submit_context: false,
+        };
+        let js = compile_handler_body(
+            "let todos = await action('addTodo', { title: title })",
+            &compile_ctx,
+            1,
+            1,
+        )
+        .expect("handler");
+        assert!(js.contains("WebScript.action(actionUrl, 'addTodo'"));
+        assert!(js.contains("signals.title.get()"));
+    }
+
+    #[test]
     fn renders_submit_with_prevent_default_and_custom_param() {
         let manifest = IslandManifest {
             id: "Form-0".to_string(),
             component: "Form".to_string(),
+            action_url: "/".to_string(),
             signals: Vec::new(),
             event_handlers: vec![EventHandler {
                 event: "submit".to_string(),
@@ -1277,10 +1535,13 @@ mod tests {
             }],
             named_handlers: vec![NamedHandler {
                 name: "save".to_string(),
+                param_name: String::new(),
                 js_body: "signals.saved.set(true)".to_string(),
+                is_async: false,
             }],
             text_bindings: Vec::new(),
             value_bindings: Vec::new(),
+            html_bindings: Vec::new(),
             if_bindings: Vec::new(),
         };
 

@@ -5,6 +5,7 @@
   <nav aria-label="Main">
     <a href="/">Home</a>
     <a href="/todos">Todos</a>
+    <a href="/todos/live">Live todos</a>
     <a href="/ui">UI</a>
     <a href="/counter">Counter</a>
     <a href="/async-demo">Async demo</a>
