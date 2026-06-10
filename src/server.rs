@@ -420,6 +420,21 @@ fn load_session(
         "name".to_string(),
         crate::parser::Value::String(String::new()),
     );
+    session.insert(
+        "todo1".to_string(),
+        crate::parser::Value::String(String::new()),
+    );
+    session.insert(
+        "todo2".to_string(),
+        crate::parser::Value::String(String::new()),
+    );
+    session.insert(
+        "todo3".to_string(),
+        crate::parser::Value::String(String::new()),
+    );
+    session.insert("todoDone1".to_string(), crate::parser::Value::Bool(false));
+    session.insert("todoDone2".to_string(), crate::parser::Value::Bool(false));
+    session.insert("todoDone3".to_string(), crate::parser::Value::Bool(false));
     sessions.insert(session_id.clone(), session.clone());
     Ok((session_id, session, true))
 }

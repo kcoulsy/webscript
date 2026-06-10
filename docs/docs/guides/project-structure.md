@@ -14,6 +14,9 @@ my-app/
     components/
       UserCard.web
       ErrorBox.web
+    models/
+      User.web
+      Post.web
     layouts/
       AppLayout.web
     actions/
@@ -23,6 +26,8 @@ my-app/
     images/
   styles/
     app.css
+  db/
+    migrations/
   web.config
 ```
 
@@ -73,6 +78,22 @@ Use components from pages or other components:
 <UserCard user={user} />
 ```
 
+## `app/models`
+
+Model files describe database schema for migration generation.
+
+```web
+@model User {
+  id: int @primary @auto
+  email: string @unique
+  name: string
+  createdAt: datetime @default(now)
+  @index(email)
+}
+```
+
+Model files do not render routes or components. They are read by `web db:generate`.
+
 ## `app/layouts`
 
 Layouts wrap pages in shared HTML.
@@ -114,6 +135,11 @@ Files in `public` should not require compilation.
 
 Global styles can live in `styles`. Component-scoped styles can live inside `.web` files or beside components.
 
+## `db/migrations`
+
+Generated and hand-authored migration files live in `db/migrations`.
+Migration files are plain SQL and are applied in filename order by `web db:migrate`.
+
 ## `web.config`
 
 Project-level configuration can define auth defaults, deployment mode, runtime adapter, database bindings, and environment settings.
@@ -146,4 +172,3 @@ app/pages/posts/[slug].web -> /posts/{slug}
 ```
 
 Explicit route declarations should take precedence because they are unambiguous and self-documenting.
-

@@ -1,0 +1,13 @@
+@component TodoItem {
+  title: string
+  done: bool = false
+}
+
+<article class="todo-item">
+  @if done {
+    <strong>Done</strong>
+  } @else {
+    <strong>Next</strong>
+  }
+  <p>{title}</p>
+</article>

@@ -80,6 +80,36 @@ GET   /api/posts         app/api/posts.web
 POST  /api/posts         app/api/posts.web
 ```
 
+## `web db:generate`
+
+Generate a SQL migration from model files:
+
+```bash
+web db:generate create_posts
+```
+
+The command scans `app/models/**/*.web`, writes a plain SQL migration to
+`db/migrations/YYYYMMDDHHMMSS_create_posts.sql`, and updates `db/schema.sql`
+as the latest generated schema snapshot. If the generated schema has not
+changed, it prints:
+
+```txt
+No schema changes.
+```
+
+## `web db:migrate`
+
+Apply pending SQL migrations:
+
+```bash
+web db:migrate
+```
+
+The default SQLite database is `.web/data.sqlite`. The command creates `.web`
+when needed, applies `db/migrations/*.sql` in filename order, and records each
+applied migration in `_webscript_migrations` with a checksum. If an applied
+migration file changes later, migration stops with a checksum error.
+
 ## `web snapshot`
 
 Create an optional precompiled snapshot:
@@ -148,4 +178,3 @@ web serve
 ```
 
 Other commands exist for confidence, CI, diagnostics, and optimization.
-

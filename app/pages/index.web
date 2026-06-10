@@ -86,6 +86,7 @@
 
   <h2>Server logic examples</h2>
   <ul>
+    <li><a href="/todos">/todos</a> — simple session-backed todo app</li>
     <li><a href="/async-demo">/async-demo</a> — fn, while, sleep, spawn, timeout</li>
     <li><a href="/fetch-demo">/fetch-demo</a> — fetch, throw, try/catch</li>
     <li><a href="/posts/intro">/posts/intro</a> — @load with route params</li>

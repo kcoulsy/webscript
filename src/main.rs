@@ -1,3 +1,4 @@
+mod db;
 mod debugbar;
 mod dev;
 mod diagnostic;
@@ -60,6 +61,37 @@ fn run() -> Result<(), String> {
                 Err("check failed".to_string())
             }
         }
+        "db:generate" => {
+            let root = env::current_dir().map_err(|error| error.to_string())?;
+            let name = args.next();
+            match db::generate(&root, name.as_deref()) {
+                Ok(outcome) => {
+                    if let Some(migration) = outcome.migration {
+                        println!("Created {}", migration.display());
+                    } else {
+                        println!("No schema changes.");
+                    }
+                    Ok(())
+                }
+                Err(db::ModelLoadError::Diagnostic(diagnostic)) => {
+                    diagnostic.report_stderr();
+                    Err("db:generate failed".to_string())
+                }
+                Err(db::ModelLoadError::Io(error)) => Err(error),
+            }
+        }
+        "db:migrate" => {
+            let root = env::current_dir().map_err(|error| error.to_string())?;
+            let outcome = db::migrate(&root)?;
+            if outcome.applied.is_empty() {
+                println!("No pending migrations.");
+            } else {
+                for migration in outcome.applied {
+                    println!("Applied {migration}");
+                }
+            }
+            Ok(())
+        }
         "serve" => {
             let root = env::current_dir().map_err(|error| error.to_string())?;
             let options = ServeOptions::from_args(args.collect())?;
@@ -116,6 +148,6 @@ impl ServeOptions {
 
 fn print_help() {
     println!(
-        "WebScript MVP\n\nCommands:\n  web new <name>              Create a starter project\n  web serve [--port 3000]     Start the local dev server\n  web routes                  Print discovered routes\n  web check                   Parse and validate .web files\n"
+        "WebScript MVP\n\nCommands:\n  web new <name>              Create a starter project\n  web serve [--port 3000]     Start the local dev server\n  web routes                  Print discovered routes\n  web check                   Parse and validate .web files\n  web db:generate [name]      Generate a SQL migration from app/models\n  web db:migrate              Apply pending SQL migrations\n"
     );
 }

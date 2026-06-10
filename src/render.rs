@@ -152,7 +152,11 @@ fn base_scope_for(file: &WebFile, params: &Scope) -> Scope {
         }
     }
     for (name, value) in params {
-        scope.insert(name.clone(), value.clone());
+        if name == "session" {
+            scope.insert(name.clone(), merge_session_defaults(value));
+        } else {
+            scope.insert(name.clone(), value.clone());
+        }
     }
 
     scope
@@ -162,7 +166,25 @@ fn default_session_value() -> Value {
     let mut fields = BTreeMap::new();
     fields.insert("count".to_string(), Value::Int(0));
     fields.insert("name".to_string(), Value::String(String::new()));
+    fields.insert("todo1".to_string(), Value::String(String::new()));
+    fields.insert("todo2".to_string(), Value::String(String::new()));
+    fields.insert("todo3".to_string(), Value::String(String::new()));
+    fields.insert("todoDone1".to_string(), Value::Bool(false));
+    fields.insert("todoDone2".to_string(), Value::Bool(false));
+    fields.insert("todoDone3".to_string(), Value::Bool(false));
     Value::Object(fields)
+}
+
+fn merge_session_defaults(value: &Value) -> Value {
+    let Value::Object(mut defaults) = default_session_value() else {
+        return value.clone();
+    };
+    if let Value::Object(fields) = value {
+        for (name, field_value) in fields {
+            defaults.insert(name.clone(), field_value.clone());
+        }
+    }
+    Value::Object(defaults)
 }
 
 async fn scope_for_async(

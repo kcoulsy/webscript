@@ -1,0 +1,7 @@
+@model Todo {
+  id: int @primary @auto
+  title: string
+  done: bool @default(false)
+  createdAt: datetime @default(now)
+  @index(done, createdAt)
+}

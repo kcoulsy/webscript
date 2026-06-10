@@ -1,3 +1,4 @@
+use crate::db;
 use crate::diagnostic::{Diagnostic, FileDiagnostic, Span};
 use crate::parser;
 use crate::parser::Value;
@@ -205,6 +206,8 @@ pub fn create_project(root: &Path) -> Result<(), String> {
     }
 
     fs::create_dir_all(root.join("app").join("pages")).map_err(|error| error.to_string())?;
+    fs::create_dir_all(root.join("app").join("models")).map_err(|error| error.to_string())?;
+    fs::create_dir_all(root.join("db").join("migrations")).map_err(|error| error.to_string())?;
     fs::create_dir_all(root.join("public")).map_err(|error| error.to_string())?;
     fs::create_dir_all(root.join("styles")).map_err(|error| error.to_string())?;
 
@@ -272,6 +275,8 @@ pub fn check_project(root: &Path) -> Result<Vec<FileDiagnostic>, String> {
             ));
         }
     }
+
+    diagnostics.extend(db::check_models(root)?);
 
     Ok(diagnostics)
 }
@@ -365,6 +370,9 @@ fn collect_web_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String
         let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
         if path.is_dir() {
+            if path.file_name().is_some_and(|name| name == "models") {
+                continue;
+            }
             collect_web_files(&path, files)?;
         } else if path.extension().is_some_and(|extension| extension == "web") {
             files.push(path);
