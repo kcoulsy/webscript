@@ -96,13 +96,16 @@ Supported methods today: `all`, `find`, `create`, `update`, `deleteAll`.
 ## Raw SQL
 
 Use `db.query` and `db.execute` when you need plain SQL instead of model
-helpers. Both methods accept an optional second argument with bound parameters.
+helpers. `db.query` requires a [validation schema](./validation-schemas.md) as
+the last argument. `db.execute` accepts an optional second argument with bound
+parameters.
 
 ```web
 @load {
-  open: object[] = await db.query(
-    "SELECT * FROM Todo WHERE done = ? ORDER BY createdAt",
-    [false]
+  open: TodoRow[] = await db.query(
+    "SELECT title, done FROM Todo WHERE done = ? ORDER BY createdAt",
+    [false],
+    TodoRow
   )
 }
 
@@ -117,10 +120,12 @@ helpers. Both methods accept an optional second argument with bound parameters.
 
 | Method | Purpose | Returns |
 |--------|---------|---------|
-| `db.query(sql, params?)` | Read rows | `object[]` with column names as keys |
+| `db.query(sql, Schema)` | Read rows | `Schema[]` |
+| `db.query(sql, params, Schema)` | Read rows with binds | `Schema[]` |
 | `db.execute(sql, params?)` | Run writes | `{ changes: int, lastInsertId: int }` |
 
-- `params` is optional and defaults to `[]`.
+- `db.query` always requires a schema name such as `TodoRow`.
+- `params` for `db.execute` is optional and defaults to `[]`.
 - Use `?` placeholders for bound values.
 - `NULL` columns are omitted from result objects.
 - Raw SQL calls appear on the debug bar async timeline as `db.query(...)` /

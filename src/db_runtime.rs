@@ -1,5 +1,6 @@
 use crate::db::{open_database, value_to_sql};
 use crate::parser::Value;
+use crate::schema_runtime::SchemaRuntime;
 use rusqlite::{params_from_iter, Row};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -7,54 +8,56 @@ use std::sync::Arc;
 
 pub struct DbRuntime {
     root: PathBuf,
+    schemas: Arc<SchemaRuntime>,
 }
 
 impl DbRuntime {
-    pub fn new(root: PathBuf) -> Arc<Self> {
-        Arc::new(Self { root })
+    pub fn new(root: PathBuf, schemas: Arc<SchemaRuntime>) -> Result<Arc<Self>, String> {
+        Ok(Arc::new(Self { root, schemas }))
     }
 
     pub fn call(&self, method: &str, args: &[Value]) -> Result<Value, String> {
-        let connection = open_database(&self.root)?;
-
         match method {
-            "query" => {
-                let sql = expect_string(args, 0, "db.query")?;
-                let params = expect_params(args, "query")?;
-                let mut statement = connection
-                    .prepare(&sql)
-                    .map_err(|error| error.to_string())?;
-                let rows = statement
-                    .query_map(params_from_iter(params.iter()), row_to_object)
-                    .map_err(|error| error.to_string())?;
-                let mut values = Vec::new();
-                for row in rows {
-                    values.push(row.map_err(|error| error.to_string())?);
-                }
-                Ok(Value::Array {
-                    element_type: "object".to_string(),
-                    values,
-                })
-            }
-            "execute" => {
-                let sql = expect_string(args, 0, "db.execute")?;
-                let params = expect_params(args, "execute")?;
-                connection
-                    .execute(&sql, params_from_iter(params.iter()))
-                    .map_err(|error| error.to_string())?;
-                let mut fields = BTreeMap::new();
-                fields.insert(
-                    "changes".to_string(),
-                    Value::Int(connection.changes() as i64),
-                );
-                fields.insert(
-                    "lastInsertId".to_string(),
-                    Value::Int(connection.last_insert_rowid()),
-                );
-                Ok(Value::Object(fields))
-            }
+            "execute" => self.execute(args),
+            "query" => Err("db.query requires a schema; use db.query(sql, Schema) or db.query(sql, params, Schema)".to_string()),
             other => Err(format!("unknown method `db.{other}`")),
         }
+    }
+
+    pub fn call_query(&self, args: &[Value], schema_name: &str) -> Result<Value, String> {
+        let connection = open_database(&self.root)?;
+        let sql = expect_string(args, 0, "db.query")?;
+        let params = expect_query_params(args, "query")?;
+        let mut statement = connection
+            .prepare(&sql)
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params_from_iter(params.iter()), row_to_object)
+            .map_err(|error| error.to_string())?;
+        let mut values = Vec::new();
+        for row in rows {
+            values.push(row.map_err(|error| error.to_string())?);
+        }
+        self.schemas.validate_rows(schema_name, values)
+    }
+
+    fn execute(&self, args: &[Value]) -> Result<Value, String> {
+        let connection = open_database(&self.root)?;
+        let sql = expect_string(args, 0, "db.execute")?;
+        let params = expect_execute_params(args, "execute")?;
+        connection
+            .execute(&sql, params_from_iter(params.iter()))
+            .map_err(|error| error.to_string())?;
+        let mut fields = BTreeMap::new();
+        fields.insert(
+            "changes".to_string(),
+            Value::Int(connection.changes() as i64),
+        );
+        fields.insert(
+            "lastInsertId".to_string(),
+            Value::Int(connection.last_insert_rowid()),
+        );
+        Ok(Value::Object(fields))
     }
 }
 
@@ -99,7 +102,28 @@ fn expect_string(args: &[Value], index: usize, name: &str) -> Result<String, Str
     }
 }
 
-fn expect_params(args: &[Value], method: &str) -> Result<Vec<rusqlite::types::Value>, String> {
+fn expect_query_params(args: &[Value], method: &str) -> Result<Vec<rusqlite::types::Value>, String> {
+    if args.len() <= 1 {
+        return Ok(Vec::new());
+    }
+    if args.len() > 2 {
+        return Err(format!(
+            "db.{method} expects (sql, Schema) or (sql, params, Schema)"
+        ));
+    }
+    match &args[1] {
+        Value::Array { values, .. } => values.iter().map(value_to_sql).collect(),
+        other => Err(format!(
+            "db.{method} params must be an array, found `{}`",
+            other.type_name()
+        )),
+    }
+}
+
+fn expect_execute_params(
+    args: &[Value],
+    method: &str,
+) -> Result<Vec<rusqlite::types::Value>, String> {
     if args.len() <= 1 {
         return Ok(Vec::new());
     }
@@ -119,6 +143,7 @@ fn expect_params(args: &[Value], method: &str) -> Result<Vec<rusqlite::types::Va
 mod tests {
     use super::*;
     use crate::db;
+    use crate::schema_runtime::SchemaRuntime;
     use std::fs;
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -132,13 +157,24 @@ mod tests {
 
     fn setup_todo_db(root: &PathBuf) {
         fs::create_dir_all(root.join("app/models")).expect("models dir");
+        fs::create_dir_all(root.join("app/schemas")).expect("schemas dir");
         fs::write(
             root.join("app/models/Todo.web"),
             "@model Todo {\n  id: int @primary @auto\n  title: string\n  done: bool @default(false)\n  createdAt: datetime @default(now)\n}\n",
         )
         .expect("write model");
+        fs::write(
+            root.join("app/schemas/TodoRow.web"),
+            "@schema TodoRow {\n  title: string\n  done: bool\n}\n",
+        )
+        .expect("write schema");
         db::generate(root, Some("schema")).expect("generate");
         db::migrate(root).expect("migrate");
+    }
+
+    fn runtime_for(root: PathBuf) -> Arc<DbRuntime> {
+        let schemas = SchemaRuntime::new(root.clone()).expect("schemas");
+        DbRuntime::new(root, schemas).expect("runtime")
     }
 
     #[test]
@@ -146,7 +182,7 @@ mod tests {
         let root = temp_root();
         setup_todo_db(&root);
 
-        let runtime = DbRuntime::new(root.clone());
+        let runtime = runtime_for(root.clone());
         runtime
             .call(
                 "execute",
@@ -164,14 +200,19 @@ mod tests {
             .expect("insert");
 
         let rows = runtime
-            .call(
-                "query",
+            .call_query(
                 &[Value::String("SELECT title, done FROM Todo".to_string())],
+                "TodoRow",
             )
             .expect("query");
-        let Value::Array { values, .. } = rows else {
+        let Value::Array {
+            values,
+            element_type,
+        } = rows
+        else {
             panic!("expected array");
         };
+        assert_eq!(element_type, "TodoRow");
         assert_eq!(values.len(), 1);
         let Value::Object(fields) = &values[0] else {
             panic!("expected object row");
@@ -180,7 +221,7 @@ mod tests {
             fields.get("title"),
             Some(&Value::String("Ship it".to_string()))
         );
-        assert_eq!(fields.get("done"), Some(&Value::Int(0)));
+        assert_eq!(fields.get("done"), Some(&Value::Bool(false)));
 
         let _ = fs::remove_dir_all(root);
     }
@@ -190,7 +231,7 @@ mod tests {
         let root = temp_root();
         setup_todo_db(&root);
 
-        let runtime = DbRuntime::new(root.clone());
+        let runtime = runtime_for(root.clone());
         runtime
             .call(
                 "execute",
@@ -223,7 +264,7 @@ mod tests {
         let root = temp_root();
         setup_todo_db(&root);
 
-        let runtime = DbRuntime::new(root.clone());
+        let runtime = runtime_for(root.clone());
         runtime
             .call(
                 "execute",
@@ -256,15 +297,15 @@ mod tests {
             .expect("insert done");
 
         let rows = runtime
-            .call(
-                "query",
+            .call_query(
                 &[
-                    Value::String("SELECT title FROM Todo WHERE done = ?1".to_string()),
+                    Value::String("SELECT title, done FROM Todo WHERE done = ?1".to_string()),
                     Value::Array {
                         element_type: "object".to_string(),
                         values: vec![Value::Bool(true)],
                     },
                 ],
+                "TodoRow",
             )
             .expect("query");
         let Value::Array { values, .. } = rows else {
@@ -276,11 +317,26 @@ mod tests {
     }
 
     #[test]
-    fn missing_database_gives_clear_error() {
+    fn query_requires_schema() {
         let root = temp_root();
-        let runtime = DbRuntime::new(root.clone());
+        setup_todo_db(&root);
+
+        let runtime = runtime_for(root.clone());
         let error = runtime
             .call("query", &[Value::String("SELECT 1".to_string())])
+            .expect_err("missing schema");
+        assert!(error.contains("requires a schema"));
+
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn missing_database_gives_clear_error() {
+        let root = temp_root();
+        fs::create_dir_all(root.join("app/schemas")).expect("schemas dir");
+        let runtime = runtime_for(root.clone());
+        let error = runtime
+            .call_query(&[Value::String("SELECT 1".to_string())], "TodoRow")
             .expect_err("missing db");
         assert!(error.contains("database not found"));
         assert!(error.contains("db:migrate"));
@@ -293,7 +349,7 @@ mod tests {
         let root = temp_root();
         setup_todo_db(&root);
 
-        let runtime = DbRuntime::new(root.clone());
+        let runtime = runtime_for(root.clone());
         let error = runtime
             .call("foo", &[Value::String("SELECT 1".to_string())])
             .expect_err("unknown method");

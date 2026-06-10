@@ -1,15 +1,14 @@
 @page "/fetch-demo"
 
 @load {
-  status: int = 0
+  origin: string = ""
+  url: string = ""
   error: string = ""
 
   try {
-    response := await fetch("https://httpbin.org/status/404")
-    if !response.ok {
-      throw("upstream returned " + response.status)
-    }
-    status = response.status
+    data: HttpBinGet = await fetch("https://httpbin.org/get", HttpBinGet)
+    origin = data.origin
+    url = data.url
   } catch err {
     error = err.message
   }
@@ -17,8 +16,9 @@
 
 <main>
   <h1>Fetch demo</h1>
-  <p>Demonstrates <code>fetch</code>, <code>throw</code>, and <code>try/catch</code>.</p>
-  <p>Status: {status}</p>
+  <p>Demonstrates <code>fetch</code> with <code>@schema</code>, <code>throw</code>, and <code>try/catch</code>.</p>
+  <p>Origin: {origin}</p>
+  <p>URL: {url}</p>
   <p>Error: {error}</p>
   <nav>
     <a href="/">Home</a>

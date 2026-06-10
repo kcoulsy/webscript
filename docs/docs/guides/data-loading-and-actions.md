@@ -26,18 +26,19 @@ Example with `fetch` and error handling:
 
 ```web
 @load {
+  origin: string = ""
   error: string = ""
 
   try {
-    response := await fetch("https://httpbin.org/status/404")
-    if !response.ok {
-      throw("upstream returned " + response.status)
-    }
+    data: HttpBinGet = await fetch("https://httpbin.org/get", HttpBinGet)
+    origin = data.origin
   } catch err {
     error = err.message
   }
 }
 ```
+
+See [validation schemas](./validation-schemas.md) for defining `HttpBinGet`.
 
 ## Returning From `@load`
 

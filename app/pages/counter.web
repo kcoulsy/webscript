@@ -1,0 +1,6 @@
+@page "/counter"
+
+<main>
+  <h1>Counter Island</h1>
+  <Counter initial={5} />
+</main>

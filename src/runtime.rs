@@ -4,6 +4,9 @@ use crate::expr;
 use crate::db_runtime::DbRuntime;
 use crate::model_runtime::ModelRuntime;
 use crate::parser::Value;
+use crate::schema::json_value_to_parser;
+use crate::schema::is_schema_name;
+use crate::schema_runtime::SchemaRuntime;
 use crate::stmt::{self, error_value, AssignTarget, BlockOutcome, Statement, StmtResult, WebError};
 use async_recursion::async_recursion;
 use reqwest::Client;
@@ -27,6 +30,7 @@ pub struct WebRuntime {
     promises: Arc<AsyncMutex<BTreeMap<u64, BoxFuture>>>,
     models: Option<Arc<ModelRuntime>>,
     db: Option<Arc<DbRuntime>>,
+    schemas: Option<Arc<SchemaRuntime>>,
     trace: Option<Arc<Mutex<TaskTrace>>>,
     promise_labels: Arc<Mutex<BTreeMap<u64, String>>>,
 }
@@ -38,17 +42,20 @@ impl WebRuntime {
             promises: Arc::new(AsyncMutex::new(BTreeMap::new())),
             models: None,
             db: None,
+            schemas: None,
             trace: None,
             promise_labels: Arc::new(Mutex::new(BTreeMap::new())),
         }
     }
 
     pub fn with_database(root: std::path::PathBuf) -> Result<Self, String> {
+        let schemas = SchemaRuntime::new(root.clone())?;
         Ok(Self {
             client: Client::new(),
             promises: Arc::new(AsyncMutex::new(BTreeMap::new())),
             models: Some(ModelRuntime::new(root.clone())?),
-            db: Some(DbRuntime::new(root)),
+            db: Some(DbRuntime::new(root, schemas.clone())?),
+            schemas: Some(schemas),
             trace: None,
             promise_labels: Arc::new(Mutex::new(BTreeMap::new())),
         })
@@ -60,6 +67,7 @@ impl WebRuntime {
             promises: Arc::clone(&self.promises),
             models: self.models.clone(),
             db: self.db.clone(),
+            schemas: self.schemas.clone(),
             trace: Some(trace),
             promise_labels: Arc::new(Mutex::new(BTreeMap::new())),
         }
@@ -414,6 +422,18 @@ impl WebRuntime {
         line: usize,
         column: usize,
     ) -> Result<Value, EvalError> {
+        if db_callee_name(callee).as_deref() == Some("query") {
+            return self
+                .evaluate_db_query(args, scope, session, line, column)
+                .await;
+        }
+
+        if simple_callee_name(callee).as_deref() == Some("fetch") {
+            return self
+                .evaluate_fetch(args, scope, session, line, column)
+                .await;
+        }
+
         let mut evaluated_args = Vec::with_capacity(args.len());
         for arg in args {
             evaluated_args
@@ -521,10 +541,12 @@ impl WebRuntime {
                 .builtin_sleep(&evaluated_args, line, column)
                 .await
                 .map_err(Into::into),
-            "fetch" => self
-                .builtin_fetch(&evaluated_args, line, column)
-                .await
-                .map_err(Into::into),
+            "fetch" => Err(Diagnostic::error(
+                Span::at(line, column),
+                "fetch must be called with a schema: fetch(url, Schema)",
+                None,
+            )
+            .into()),
             "spawn" => self
                 .builtin_spawn(&evaluated_args, line, column)
                 .await
@@ -561,13 +583,122 @@ impl WebRuntime {
         Ok(Value::Promise { id })
     }
 
+    async fn evaluate_fetch(
+        &self,
+        args: &[expr::Expr],
+        scope: &Env,
+        session: &BTreeMap<String, Value>,
+        line: usize,
+        column: usize,
+    ) -> Result<Value, EvalError> {
+        if args.len() != 2 {
+            return Err(Diagnostic::error(
+                Span::at(line, column),
+                "fetch expects 2 arguments (url, Schema)",
+                None,
+            )
+            .into());
+        }
+        let schema_name = schema_ref_name(&args[1]).ok_or_else(|| {
+            Diagnostic::error(
+                Span::at(line, column),
+                "fetch second argument must be a schema name such as ApiResponse",
+                None,
+            )
+        })?;
+        let url_value = Box::pin(self.evaluate_expr_inner(&args[0], scope, session, line, column))
+            .await?;
+        let Value::String(url) = url_value else {
+            return Err(Diagnostic::error(
+                Span::at(line, column),
+                format!(
+                    "fetch expects string url, found `{}`",
+                    url_value.type_name()
+                ),
+                None,
+            )
+            .into());
+        };
+        self.builtin_fetch(url, schema_name.to_string(), line, column)
+            .await
+            .map_err(Into::into)
+    }
+
+    async fn evaluate_db_query(
+        &self,
+        args: &[expr::Expr],
+        scope: &Env,
+        session: &BTreeMap<String, Value>,
+        line: usize,
+        column: usize,
+    ) -> Result<Value, EvalError> {
+        if args.is_empty() || args.len() > 3 {
+            return Err(Diagnostic::error(
+                Span::at(line, column),
+                "db.query expects (sql, Schema) or (sql, params, Schema)",
+                None,
+            )
+            .into());
+        }
+        let schema_name = schema_ref_name(args.last().expect("checked length")).ok_or_else(|| {
+            Diagnostic::error(
+                Span::at(line, column),
+                "db.query requires a schema as the last argument",
+                None,
+            )
+        })?;
+        let Some(db) = self.db.clone() else {
+            return Err(Diagnostic::error(
+                Span::at(line, column),
+                "database helper `db.query` requires a project database",
+                None,
+            )
+            .into());
+        };
+
+        let mut evaluated_args = Vec::with_capacity(args.len() - 1);
+        for arg in &args[..args.len() - 1] {
+            evaluated_args
+                .push(Box::pin(self.evaluate_expr_inner(arg, scope, session, line, column)).await?);
+        }
+        if evaluated_args.is_empty() {
+            return Err(Diagnostic::error(
+                Span::at(line, column),
+                "db.query expects a SQL string as the first argument",
+                None,
+            )
+            .into());
+        }
+
+        let label = db_task_label("query", &evaluated_args);
+        let schema_name = schema_name.to_string();
+        let id = self
+            .insert_future(
+                label,
+                TaskKind::Db,
+                async move {
+                    db.call_query(&evaluated_args, &schema_name)
+                        .map_err(|error| WebError { message: error })
+                },
+            )
+            .await;
+        Ok(Value::Promise { id })
+    }
+
     async fn builtin_fetch(
         &self,
-        args: &[Value],
+        url: String,
+        schema_name: String,
         line: usize,
         column: usize,
     ) -> Result<Value, Diagnostic> {
-        let url = expect_string(args, line, column, "fetch")?;
+        let Some(schemas) = self.schemas.clone() else {
+            return Err(Diagnostic::error(
+                Span::at(line, column),
+                "fetch requires loaded project schemas",
+                None,
+            ));
+        };
         let label = format!("fetch({})", truncate_label(&url, 48));
         let client = self.client.clone();
         let id = self
@@ -576,15 +707,21 @@ impl WebRuntime {
                     message: error.to_string(),
                 })?;
                 let status = response.status().as_u16() as i64;
+                if !(200..300).contains(&(status as i16)) {
+                    return Err(WebError {
+                        message: format!("fetch returned {status}"),
+                    });
+                }
                 let body = response.text().await.map_err(|error| WebError {
                     message: error.to_string(),
                 })?;
-                let ok = (200..300).contains(&(status as i16));
-                let mut fields = BTreeMap::new();
-                fields.insert("status".to_string(), Value::Int(status));
-                fields.insert("body".to_string(), Value::String(body));
-                fields.insert("ok".to_string(), Value::Bool(ok));
-                Ok(Value::Object(fields))
+                let json = serde_json::from_str(&body).map_err(|error| WebError {
+                    message: format!("invalid JSON response: {error}"),
+                })?;
+                let value = json_value_to_parser(json).map_err(|error| WebError { message: error })?;
+                schemas
+                    .validate(&schema_name, value)
+                    .map_err(|error| WebError { message: error })
             })
             .await;
         Ok(Value::Promise { id })
@@ -828,6 +965,13 @@ fn db_task_label(method: &str, args: &[Value]) -> String {
     format!("db.{method}(\"{sql}\")")
 }
 
+fn schema_ref_name(expr: &expr::Expr) -> Option<&str> {
+    match expr {
+        expr::Expr::Path(path) if path.len() == 1 && is_schema_name(&path[0]) => Some(&path[0]),
+        _ => None,
+    }
+}
+
 fn model_callee_name(expr: &expr::Expr) -> Option<(String, String)> {
     match expr {
         expr::Expr::Path(path) if path.len() == 2 && path[0] != "db" => {
@@ -923,7 +1067,29 @@ fn type_mismatch(line: usize, column: usize, expected: &str, found: &str) -> Dia
 }
 
 fn type_names_match(actual: &str, expected: &str) -> bool {
-    actual == expected || (expected == "object" && (actual == "object" || actual.starts_with('{')))
+    if actual == expected {
+        return true;
+    }
+
+    if is_object_type_name(expected) {
+        return actual == "object" || actual.starts_with('{');
+    }
+
+    if let (Some(actual_element), Some(expected_element)) =
+        (actual.strip_suffix("[]"), expected.strip_suffix("[]"))
+    {
+        return type_names_match(actual_element, expected_element);
+    }
+
+    actual.starts_with('{') && expected.starts_with('{') && actual == expected
+}
+
+fn is_object_type_name(type_name: &str) -> bool {
+    type_name == "object"
+        || type_name
+            .chars()
+            .next()
+            .is_some_and(|char| char.is_ascii_uppercase())
 }
 
 impl Default for WebRuntime {
@@ -962,26 +1128,41 @@ mod tests {
             .as_nanos();
         let root = std::env::temp_dir().join(format!("webscript-runtime-db-{nanos}"));
         fs::create_dir_all(root.join("app/models")).expect("models dir");
+        fs::create_dir_all(root.join("app/schemas")).expect("schemas dir");
         fs::write(
             root.join("app/models/Todo.web"),
             "@model Todo {\n  id: int @primary @auto\n  title: string\n  done: bool @default(false)\n  createdAt: datetime @default(now)\n}\n",
         )
         .expect("write model");
+        fs::write(
+            root.join("app/schemas/CountRow.web"),
+            "@schema CountRow {\n  n: int\n}\n",
+        )
+        .expect("write schema");
         db::generate(&root, Some("schema")).expect("generate");
         db::migrate(&root).expect("migrate");
 
         let runtime = WebRuntime::with_database(root.clone()).expect("runtime");
-        let expression =
-            expr::parse("await db.query(\"SELECT 1 AS n\")", 1, 1).expect("parse");
+        let expression = expr::parse(
+            "await db.query(\"SELECT 1 AS n\", CountRow)",
+            1,
+            1,
+        )
+        .expect("parse");
         let scope = Env::new();
         let session = BTreeMap::new();
         let value = runtime
             .evaluate_expr(&expression, &scope, &session, 1, 1)
             .await
             .expect("db query");
-        let Value::Array { values, .. } = value else {
+        let Value::Array {
+            values,
+            element_type,
+        } = value
+        else {
             panic!("expected array");
         };
+        assert_eq!(element_type, "CountRow");
         assert_eq!(values.len(), 1);
         let Value::Object(fields) = &values[0] else {
             panic!("expected object row");

@@ -20,10 +20,39 @@ fn parse_diagnostic_line(line: usize, message: impl Into<String>) -> Diagnostic 
 pub struct WebFile {
     pub route: Option<RoutePattern>,
     pub component: Option<ComponentDecl>,
+    pub client: Option<ClientBlock>,
     pub load: Option<ServerBlock>,
     pub actions: Vec<ActionDecl>,
     pub lets: Vec<LetDecl>,
     pub template: Vec<TemplateNode>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientBlock {
+    pub signals: Vec<ClientSignalDecl>,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ClientSignalDecl {
+    pub name: String,
+    pub type_name: String,
+    pub initial: ClientInitial,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ClientInitial {
+    Literal(Value),
+    PropRef(String),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EventBinding {
+    pub event: String,
+    pub handler_source: String,
+    pub line: usize,
+    pub column: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -97,6 +126,7 @@ pub enum TemplateNode {
         statements: Vec<Statement>,
         line: usize,
     },
+    EventBinding(EventBinding),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -241,6 +271,7 @@ fn sample_value(type_name: &str) -> Option<Value> {
 pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
     let mut route = None;
     let mut component = None;
+    let mut client = None;
     let mut load = None;
     let mut actions = Vec::new();
     let mut lets = Vec::new();
@@ -286,6 +317,17 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
             continue;
         }
 
+        if trimmed.starts_with("@client") {
+            if client.is_some() {
+                return Err(parse_diagnostic_line(
+                    line_number,
+                    "duplicate @client directive",
+                ));
+            }
+            client = Some(parse_client(&lines, &mut line_index)?);
+            continue;
+        }
+
         if trimmed.starts_with("@action") {
             actions.push(parse_action(&lines, &mut line_index)?);
             continue;
@@ -319,6 +361,7 @@ pub fn parse(source: &str) -> Result<WebFile, Diagnostic> {
     Ok(WebFile {
         route,
         component,
+        client,
         load,
         actions,
         lets,
@@ -401,7 +444,7 @@ fn parse_nodes(
             continue;
         }
 
-        nodes.extend(parse_text_line(raw_line, line_number));
+        nodes.extend(parse_text_line(raw_line, line_number)?);
         if *cursor + 1 < lines.len() && !is_block_close(lines[*cursor + 1].trim()) {
             nodes.push(TemplateNode::Text("\n".to_string()));
         }
@@ -456,6 +499,120 @@ fn parse_component(lines: &[&str], cursor: &mut usize) -> Result<ComponentDecl, 
         line_number,
         "unclosed @component block",
     ))
+}
+
+fn parse_client(lines: &[&str], cursor: &mut usize) -> Result<ClientBlock, Diagnostic> {
+    let line_number = *cursor + 1;
+    let trimmed = lines[*cursor].trim();
+    if trimmed != "@client {" {
+        return Err(parse_diagnostic_line(
+            line_number,
+            "@client expects `@client {`",
+        ));
+    }
+    *cursor += 1;
+    let mut signals = Vec::new();
+
+    while *cursor < lines.len() {
+        let signal_line_number = *cursor + 1;
+        let trimmed = lines[*cursor].trim();
+        if trimmed == "}" {
+            *cursor += 1;
+            return Ok(ClientBlock {
+                signals,
+                line: line_number,
+            });
+        }
+        if trimmed.is_empty() {
+            *cursor += 1;
+            continue;
+        }
+
+        signals.push(parse_client_signal(trimmed, signal_line_number)?);
+        *cursor += 1;
+    }
+
+    Err(parse_diagnostic_line(line_number, "unclosed @client block"))
+}
+
+fn parse_client_signal(line: &str, line_number: usize) -> Result<ClientSignalDecl, Diagnostic> {
+    let (left, initial_source) = line
+        .split_once('=')
+        .ok_or_else(|| parse_diagnostic_line(line_number, "client signals require an initial value"))?;
+    let left = left.trim();
+    let initial_source = initial_source.trim();
+
+    let (name, type_part) = left.split_once(':').ok_or_else(|| {
+        parse_diagnostic_line(line_number, "client signals use `name: signal<type> = value`")
+    })?;
+    let name = name.trim();
+    let type_part = type_part.trim();
+
+    if !is_identifier(name) {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("invalid signal name `{name}`"),
+        ));
+    }
+
+    let Some(inner_type) = type_part
+        .strip_prefix("signal<")
+        .and_then(|value| value.strip_suffix('>'))
+    else {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("`{type_part}` is not a supported signal type; use signal<int> or signal<bool>"),
+        ));
+    };
+    let inner_type = inner_type.trim();
+    if inner_type != "int" && inner_type != "bool" {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("unsupported signal type `{inner_type}`; use int or bool"),
+        ));
+    }
+
+    let initial = if initial_source.starts_with('"') || initial_source.starts_with('\'') {
+        ClientInitial::Literal(parse_value(
+            inner_type,
+            initial_source,
+            line_number,
+            1,
+            initial_source.len(),
+        )?)
+    } else if initial_source == "true" || initial_source == "false" {
+        ClientInitial::Literal(parse_value(
+            inner_type,
+            initial_source,
+            line_number,
+            1,
+            initial_source.len(),
+        )?)
+    } else if initial_source.chars().all(|char| char.is_ascii_digit() || char == '-')
+        && inner_type == "int"
+    {
+        ClientInitial::Literal(parse_value(
+            inner_type,
+            initial_source,
+            line_number,
+            1,
+            initial_source.len(),
+        )?)
+    } else if is_identifier(initial_source) {
+        ClientInitial::PropRef(initial_source.to_string())
+    } else {
+        return Err(parse_diagnostic_line(
+            line_number,
+            format!("invalid client signal initial value `{initial_source}`"),
+        ));
+    };
+
+    Ok(ClientSignalDecl {
+        name: name.to_string(),
+        type_name: inner_type.to_string(),
+        initial,
+        line: line_number,
+    })
 }
 
 fn parse_server_directive(
@@ -962,7 +1119,80 @@ fn parse_if(
     })
 }
 
-fn parse_text_line(line: &str, line_number: usize) -> Vec<TemplateNode> {
+fn extract_event_bindings(
+    line: &str,
+    line_number: usize,
+) -> Result<(String, Vec<EventBinding>), Diagnostic> {
+    let mut bindings = Vec::new();
+    let mut output = String::new();
+    let mut offset = 0;
+
+    while let Some(relative) = line[offset..].find("@click") {
+        let start = offset + relative;
+        output.push_str(&line[offset..start]);
+
+        let rest = &line[start..];
+        if !rest.starts_with("@click=") {
+            output.push_str("@click");
+            offset = start + 6;
+            continue;
+        }
+
+        let brace_start = "@click=".len();
+        if rest.len() <= brace_start || rest.as_bytes()[brace_start] != b'{' {
+            return Err(parse_diagnostic(
+                line_number,
+                start + 1,
+                start + rest.len().min(start + 20),
+                "@click expects `@click={handler}`",
+            ));
+        }
+
+        let handler_start = brace_start + 1;
+        let mut depth = 1usize;
+        let mut handler_end = None;
+        for (index, ch) in rest[handler_start..].char_indices() {
+            match ch {
+                '{' => depth += 1,
+                '}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        handler_end = Some(handler_start + index);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        let Some(handler_end) = handler_end else {
+            return Err(parse_diagnostic(
+                line_number,
+                start + 1,
+                line.len(),
+                "unclosed `@click` handler",
+            ));
+        };
+
+        let handler_source = rest[handler_start..handler_end].trim().to_string();
+        bindings.push(EventBinding {
+            event: "click".to_string(),
+            handler_source,
+            line: line_number,
+            column: start + 1,
+        });
+
+        output.push_str(" data-ws-click");
+        offset = start + handler_end + 1;
+    }
+
+    output.push_str(&line[offset..]);
+    Ok((output, bindings))
+}
+
+fn parse_text_line(line: &str, line_number: usize) -> Result<Vec<TemplateNode>, Diagnostic> {
+    let (line, event_bindings) = extract_event_bindings(line, line_number)?;
+
     let mut nodes = Vec::new();
     let mut offset = 0;
 
@@ -975,7 +1205,10 @@ fn parse_text_line(line: &str, line_number: usize) -> Vec<TemplateNode> {
         let expr_start = absolute_start + 1;
         let Some(end) = line[expr_start..].find('}') else {
             nodes.push(TemplateNode::Text(line[absolute_start..].to_string()));
-            return nodes;
+            for binding in event_bindings {
+                nodes.push(TemplateNode::EventBinding(binding));
+            }
+            return Ok(nodes);
         };
 
         let expr_end = expr_start + end;
@@ -1009,7 +1242,11 @@ fn parse_text_line(line: &str, line_number: usize) -> Vec<TemplateNode> {
         nodes.push(TemplateNode::Text(line[offset..].to_string()));
     }
 
-    nodes
+    for binding in event_bindings {
+        nodes.push(TemplateNode::EventBinding(binding));
+    }
+
+    Ok(nodes)
 }
 
 fn parse_page(line: &str, line_number: usize) -> Result<RoutePattern, Diagnostic> {
@@ -1441,6 +1678,31 @@ mod tests {
 
         assert_eq!(error.message, "unexpected directive `@wat`");
         assert_eq!(error.span.line, 3);
+    }
+
+    #[test]
+    fn parses_client_block_and_click_binding() {
+        let component = parse(
+            "@component Counter {\n  initial: int = 0\n}\n\n@client {\n  count: signal<int> = initial\n}\n\n<button @click={count++}>\n  {count}\n</button>",
+        )
+        .expect("valid component");
+
+        let client = component.client.as_ref().expect("client block");
+        assert_eq!(client.signals[0].name, "count");
+        assert_eq!(client.signals[0].type_name, "int");
+        assert!(matches!(
+            client.signals[0].initial,
+            super::ClientInitial::PropRef(ref name) if name == "initial"
+        ));
+
+        assert!(component.template.iter().any(|node| matches!(
+            node,
+            TemplateNode::Text(value) if value.contains("data-ws-click")
+        )));
+        assert!(component
+            .template
+            .iter()
+            .any(|node| matches!(node, TemplateNode::EventBinding(binding) if binding.handler_source == "count++")));
     }
 
     #[test]

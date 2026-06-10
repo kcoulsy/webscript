@@ -1,5 +1,7 @@
 use crate::db;
 use crate::diagnostic::{Diagnostic, FileDiagnostic, Span};
+use crate::schema;
+use crate::validate;
 use crate::parser;
 use crate::parser::Value;
 use crate::render::{self, Scope};
@@ -266,8 +268,24 @@ pub fn check_project(root: &Path) -> Result<Vec<FileDiagnostic>, String> {
         }
     }
 
+    let schema_names: std::collections::BTreeSet<String> = match schema::discover_schemas(root) {
+        Ok(schemas) => schemas.into_iter().map(|schema| schema.name).collect(),
+        Err(schema::SchemaLoadError::Diagnostic(diagnostic)) => {
+            diagnostics.push(diagnostic);
+            std::collections::BTreeSet::new()
+        }
+        Err(schema::SchemaLoadError::Io(error)) => return Err(error),
+    };
+
     for (file, (parsed, source)) in &parsed_by_file {
         for diagnostic in render::validate_with_components(parsed, &components) {
+            diagnostics.push(FileDiagnostic::new(
+                file.clone(),
+                source.clone(),
+                diagnostic,
+            ));
+        }
+        for diagnostic in validate::validate_schema_calls(parsed, &schema_names) {
             diagnostics.push(FileDiagnostic::new(
                 file.clone(),
                 source.clone(),
@@ -277,6 +295,7 @@ pub fn check_project(root: &Path) -> Result<Vec<FileDiagnostic>, String> {
     }
 
     diagnostics.extend(db::check_models(root)?);
+    diagnostics.extend(schema::check_schemas(root)?);
 
     Ok(diagnostics)
 }
@@ -370,7 +389,10 @@ fn collect_web_files(root: &Path, files: &mut Vec<PathBuf>) -> Result<(), String
         let entry = entry.map_err(|error| error.to_string())?;
         let path = entry.path();
         if path.is_dir() {
-            if path.file_name().is_some_and(|name| name == "models") {
+            if path
+                .file_name()
+                .is_some_and(|name| name == "models" || name == "schemas")
+            {
                 continue;
             }
             collect_web_files(&path, files)?;

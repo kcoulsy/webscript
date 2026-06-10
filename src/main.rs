@@ -1,6 +1,9 @@
+mod client;
 mod db;
 mod db_runtime;
 mod model_runtime;
+mod schema;
+mod schema_runtime;
 mod debugbar;
 mod dev;
 mod diagnostic;
@@ -11,6 +14,7 @@ mod render;
 mod runtime;
 mod server;
 mod stmt;
+mod validate;
 
 use std::env;
 use std::path::Path;

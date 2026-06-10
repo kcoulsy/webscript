@@ -68,15 +68,12 @@ Create `app/pages/fetch-demo.web`:
 @page "/fetch-demo"
 
 @load {
-  status: int = 0
+  origin: string = ""
   error: string = ""
 
   try {
-    response := await fetch("https://httpbin.org/status/404")
-    if !response.ok {
-      throw("upstream returned " + response.status)
-    }
-    status = response.status
+    data: HttpBinGet = await fetch("https://httpbin.org/get", HttpBinGet)
+    origin = data.origin
   } catch err {
     error = err.message
   }
@@ -84,7 +81,7 @@ Create `app/pages/fetch-demo.web`:
 
 <main>
   <h1>Fetch demo</h1>
-  <p>Status: {status}</p>
+  <p>Origin: {origin}</p>
   <p>Error: {error}</p>
 </main>
 ```

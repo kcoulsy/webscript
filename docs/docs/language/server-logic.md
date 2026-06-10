@@ -26,15 +26,11 @@ result = { status: 404, body: "", error: "missing" }
 ## Functions
 
 ```web
-fn fetchWithRetry(url: string): object {
+fn fetchWithRetry(url: string): ApiResponse {
   attempts := 0
   while attempts < 3 {
     try {
-      response := await fetch(url)
-      if response.status >= 400 {
-        throw("HTTP " + response.status)
-      }
-      return response
+      return await fetch(url, ApiResponse)
     } catch err {
       attempts = attempts + 1
       if attempts >= 3 {
@@ -65,10 +61,7 @@ while attempts < 3 {
 
 ```web
 try {
-  response := await fetch("https://example.com/api")
-  if !response.ok {
-    throw("upstream returned " + response.status)
-  }
+  data: ApiResponse = await fetch("https://example.com/api", ApiResponse)
 } catch err {
   result = { error: err.message }
 }
@@ -78,24 +71,16 @@ try {
 
 ```web
 await sleep(500ms)
-task := spawn(fetch("https://example.com"))
+task := spawn(fetch("https://example.com/api", ApiResponse))
 result := await timeout(5s, task)
-response := await fetch("https://example.com/api")
+data: ApiResponse = await fetch("https://example.com/api", ApiResponse)
 ```
 
-### `fetch(url)`
+### `fetch(url, Schema)`
 
-Returns:
-
-```web
-{
-  status: int
-  body: string
-  ok: bool
-}
-```
-
-Network errors reject into `try/catch`. HTTP 4xx/5xx do not auto-throw.
+Performs a GET request, parses the JSON body, validates it against the schema,
+and returns the validated object. Network errors and non-2xx status codes reject
+into `try/catch`. Validation failures throw with a field-level message.
 
 ### `sleep(duration)`
 

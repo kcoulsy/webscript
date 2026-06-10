@@ -1,0 +1,11 @@
+@component Counter {
+  initial: int = 0
+}
+
+@client {
+  count: signal<int> = initial
+}
+
+<button @click={count++}>
+  {count}
+</button>

@@ -2,6 +2,17 @@
 
 WebScript is server-first, but it supports browser-only interactivity through a tiny standard runtime.
 
+## Implemented in MVP
+
+The current runtime supports:
+
+- `@client` signal declarations (`signal<int>`, `signal<bool>`)
+- `@click` handlers on component islands
+- Server-rendered initial HTML with per-island hydration scripts
+- `/.web/runtime.js` signal primitive (no bundler)
+
+Coming soon: reactive `@if` / `@for`, additional events (`@input`, `@submit`), enhanced forms, and page-level `@client` blocks.
+
 ## Runtime Script
 
 The framework can serve a built-in client runtime:

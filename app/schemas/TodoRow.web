@@ -1,0 +1,4 @@
+@schema TodoRow {
+  title: string
+  done: bool
+}

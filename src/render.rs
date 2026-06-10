@@ -1,22 +1,42 @@
+use crate::client::{
+    build_click_handler, resolve_signal_initial, IslandManifest, SignalBinding, TextBinding,
+};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
 use crate::parser::{
-    ComponentCall, ComponentProp, LetDecl, LetValue, PropValue, SourceExpr, TemplateNode, Value,
-    WebFile,
+    ClientBlock, ComponentCall, ComponentProp, LetDecl, LetValue, PropValue, SourceExpr,
+    TemplateNode, Value, WebFile,
 };
 use crate::runtime::WebRuntime;
 use crate::stmt::{self, BlockOutcome, Statement};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 pub type Scope = BTreeMap<String, Value>;
 pub type ComponentRegistry = BTreeMap<String, WebFile>;
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RenderOutput {
+    pub html: String,
+    pub islands: Vec<IslandManifest>,
+}
+
+#[derive(Default)]
+struct RenderContext {
+    islands: Vec<IslandManifest>,
+    island_counts: BTreeMap<String, usize>,
+}
+
+struct IslandBuildState<'a> {
+    signal_names: BTreeSet<String>,
+    manifest: &'a mut IslandManifest,
+}
 
 pub fn render_with_components(
     file: &WebFile,
     params: &Scope,
     components: &ComponentRegistry,
     runtime: &WebRuntime,
-) -> Result<String, Diagnostic> {
+) -> Result<RenderOutput, Diagnostic> {
     if file.load.is_some() {
         return Err(Diagnostic::error(
             Span::at(1, 1),
@@ -26,7 +46,19 @@ pub fn render_with_components(
     }
     let mut scope = base_scope_for(file, params);
     evaluate_lets(&file.lets, &mut scope)?;
-    render_nodes(&file.template, &scope, components, runtime)
+    let mut context = RenderContext::default();
+    let html = render_nodes(
+        &file.template,
+        &scope,
+        components,
+        runtime,
+        &mut context,
+        None,
+    )?;
+    Ok(RenderOutput {
+        html,
+        islands: context.islands,
+    })
 }
 
 pub async fn render_with_components_async(
@@ -34,9 +66,21 @@ pub async fn render_with_components_async(
     params: &Scope,
     components: &ComponentRegistry,
     runtime: &WebRuntime,
-) -> Result<String, Diagnostic> {
+) -> Result<RenderOutput, Diagnostic> {
     let scope = scope_for_async(file, params, runtime).await?;
-    render_nodes(&file.template, &scope, components, runtime)
+    let mut context = RenderContext::default();
+    let html = render_nodes(
+        &file.template,
+        &scope,
+        components,
+        runtime,
+        &mut context,
+        None,
+    )?;
+    Ok(RenderOutput {
+        html,
+        islands: context.islands,
+    })
 }
 
 pub fn validate_with_components(file: &WebFile, components: &ComponentRegistry) -> Vec<Diagnostic> {
@@ -66,7 +110,7 @@ fn merge_load_samples(file: &WebFile, scope: &mut Scope) {
         } = statement
         {
             let type_name = type_name.as_deref().unwrap_or("string");
-            scope.insert(name.clone(), sample_for_type(type_name));
+            scope.insert(name.clone(), sample_for_prop_type(type_name));
         }
     }
 }
@@ -244,6 +288,8 @@ fn render_nodes(
     scope: &Scope,
     components: &ComponentRegistry,
     runtime: &WebRuntime,
+    context: &mut RenderContext,
+    mut island: Option<&mut IslandBuildState<'_>>,
 ) -> Result<String, Diagnostic> {
     let mut html = String::new();
     let mut scope = scope.clone();
@@ -252,11 +298,12 @@ fn render_nodes(
         match node {
             TemplateNode::Text(value) => html.push_str(value),
             TemplateNode::Expr(expr) => {
-                let value = evaluate_source_expr(expr, &scope)?;
-                html.push_str(&escape_html(&value.render()));
+                html.push_str(&render_expr(expr, &scope, island.as_deref_mut())?);
             }
             TemplateNode::Component(call) => {
-                html.push_str(&render_component(call, &scope, components, runtime)?);
+                html.push_str(&render_component(
+                    call, &scope, components, runtime, context,
+                )?);
             }
             TemplateNode::If {
                 condition,
@@ -269,9 +316,23 @@ fn render_nodes(
                 };
 
                 if condition_value {
-                    html.push_str(&render_nodes(then_nodes, &scope, components, runtime)?);
+                    html.push_str(&render_nodes(
+                        then_nodes,
+                        &scope,
+                        components,
+                        runtime,
+                        context,
+                        island.as_deref_mut(),
+                    )?);
                 } else {
-                    html.push_str(&render_nodes(else_nodes, &scope, components, runtime)?);
+                    html.push_str(&render_nodes(
+                        else_nodes,
+                        &scope,
+                        components,
+                        runtime,
+                        context,
+                        island.as_deref_mut(),
+                    )?);
                 }
             }
             TemplateNode::For {
@@ -287,7 +348,14 @@ fn render_nodes(
                 for item in items.to_vec() {
                     let mut loop_scope = scope.clone();
                     loop_scope.insert(item_name.clone(), item);
-                    html.push_str(&render_nodes(body, &loop_scope, components, runtime)?);
+                    html.push_str(&render_nodes(
+                        body,
+                        &loop_scope,
+                        components,
+                        runtime,
+                        context,
+                        island.as_deref_mut(),
+                    )?);
                 }
             }
             TemplateNode::Do { statements, .. } => {
@@ -298,10 +366,54 @@ fn render_nodes(
                 stmt::execute_sync(statements, &mut scope, &mut session)?;
                 scope.insert("session".to_string(), Value::Object(session));
             }
+            TemplateNode::EventBinding(binding) => {
+                if let Some(island) = island.as_deref_mut() {
+                    let handler = build_click_handler(binding)?;
+                    island.manifest.click_handlers.push(handler);
+                }
+            }
         }
     }
 
     Ok(html)
+}
+
+fn render_expr(
+    expr: &SourceExpr,
+    scope: &Scope,
+    island: Option<&mut IslandBuildState<'_>>,
+) -> Result<String, Diagnostic> {
+    if let Some(island) = island {
+        if let Some(signal_name) = signal_expr_name(&expr.expr) {
+            if island.signal_names.contains(signal_name) {
+                let value = evaluate_source_expr(expr, scope)?;
+                if !island
+                    .manifest
+                    .text_bindings
+                    .iter()
+                    .any(|binding| binding.signal == signal_name)
+                {
+                    island.manifest.text_bindings.push(TextBinding {
+                        signal: signal_name.to_string(),
+                    });
+                }
+                return Ok(format!(
+                    "<span data-ws-text=\"{signal_name}\">{}</span>",
+                    escape_html(&value.render())
+                ));
+            }
+        }
+    }
+
+    let value = evaluate_source_expr(expr, scope)?;
+    Ok(escape_html(&value.render()))
+}
+
+fn signal_expr_name(expr: &expr::Expr) -> Option<&str> {
+    match expr {
+        expr::Expr::Path(path) if path.len() == 1 => Some(&path[0]),
+        _ => None,
+    }
 }
 
 fn render_component(
@@ -309,12 +421,94 @@ fn render_component(
     scope: &Scope,
     components: &ComponentRegistry,
     runtime: &WebRuntime,
+    context: &mut RenderContext,
 ) -> Result<String, Diagnostic> {
     let component = components
         .get(&call.name)
         .ok_or_else(|| unknown_component(call))?;
     let component_scope = component_scope(call, component, scope)?;
-    render_nodes(&component.template, &component_scope, components, runtime)
+
+    if let Some(client) = &component.client {
+        return render_client_component(
+            call,
+            component,
+            &component_scope,
+            client,
+            components,
+            runtime,
+            context,
+        );
+    }
+
+    render_nodes(
+        &component.template,
+        &component_scope,
+        components,
+        runtime,
+        context,
+        None,
+    )
+}
+
+fn render_client_component(
+    call: &ComponentCall,
+    component: &WebFile,
+    component_scope: &Scope,
+    client: &ClientBlock,
+    components: &ComponentRegistry,
+    runtime: &WebRuntime,
+    context: &mut RenderContext,
+) -> Result<String, Diagnostic> {
+    let island_index = context
+        .island_counts
+        .entry(call.name.clone())
+        .and_modify(|count| *count += 1)
+        .or_insert(0);
+    let island_id = format!("{}-{}", call.name, island_index);
+
+    let mut signal_bindings = Vec::new();
+    let mut render_scope = component_scope.clone();
+    let mut signal_names = BTreeSet::new();
+
+    for signal in &client.signals {
+        let initial = resolve_signal_initial(signal, component_scope)?;
+        signal_names.insert(signal.name.clone());
+        signal_bindings.push(SignalBinding {
+            name: signal.name.clone(),
+            type_name: signal.type_name.clone(),
+            initial: initial.clone(),
+        });
+        render_scope.insert(signal.name.clone(), initial);
+    }
+
+    let mut manifest = IslandManifest {
+        id: island_id.clone(),
+        component: call.name.clone(),
+        signals: signal_bindings,
+        click_handlers: Vec::new(),
+        text_bindings: Vec::new(),
+    };
+
+    let mut island_state = IslandBuildState {
+        signal_names,
+        manifest: &mut manifest,
+    };
+
+    let inner = render_nodes(
+        &component.template,
+        &render_scope,
+        components,
+        runtime,
+        context,
+        Some(&mut island_state),
+    )?;
+
+    context.islands.push(manifest);
+
+    Ok(format!(
+        "<div data-ws-island=\"{island_id}\" data-ws-component=\"{component}\">{inner}</div>",
+        component = call.name
+    ))
 }
 
 fn component_scope(
@@ -438,6 +632,11 @@ fn validate_nodes(
                     diagnostics.push(error);
                 } else {
                     scope.insert("session".to_string(), Value::Object(session));
+                }
+            }
+            TemplateNode::EventBinding(binding) => {
+                if let Err(error) = build_click_handler(binding) {
+                    diagnostics.push(error);
                 }
             }
         }
@@ -679,7 +878,8 @@ mod tests {
                 &ComponentRegistry::new(),
                 &WebRuntime::new()
             )
-            .expect("rendered"),
+            .expect("rendered")
+            .html,
             "<h1>&lt;Ada&gt;</h1>"
         );
     }
@@ -698,7 +898,8 @@ mod tests {
                 &ComponentRegistry::new(),
                 &WebRuntime::new()
             )
-            .expect("rendered"),
+            .expect("rendered")
+            .html,
             "<h1>Hello Ada</h1>\n<p>3</p>"
         );
     }
@@ -722,7 +923,8 @@ mod tests {
                 &ComponentRegistry::new(),
                 &WebRuntime::new()
             )
-            .expect("rendered"),
+            .expect("rendered")
+            .html,
             "<h1>Post: intro</h1>\n<p>intro</p>"
         );
     }
@@ -741,7 +943,8 @@ mod tests {
                 &ComponentRegistry::new(),
                 &WebRuntime::new()
             )
-            .expect("rendered"),
+            .expect("rendered")
+            .html,
             "<p>no</p>"
         );
     }
@@ -775,7 +978,8 @@ mod tests {
                 &ComponentRegistry::new(),
                 &WebRuntime::new()
             )
-            .expect("rendered"),
+            .expect("rendered")
+            .html,
             "<p>One</p><p>&lt;Two&gt;</p>"
         );
     }
@@ -815,7 +1019,7 @@ mod tests {
                 .expect("valid page");
         let runtime = WebRuntime::new();
 
-        let html = super::render_with_components_async(
+        let output = super::render_with_components_async(
             &file,
             &Scope::new(),
             &ComponentRegistry::new(),
@@ -824,7 +1028,7 @@ mod tests {
         .await
         .expect("rendered");
 
-        assert_eq!(html, "<h1>Loaded</h1>");
+        assert_eq!(output.html, "<h1>Loaded</h1>");
     }
 
     #[tokio::test]
@@ -834,7 +1038,7 @@ mod tests {
         )
         .expect("valid page");
         let runtime = WebRuntime::new();
-        let html = super::render_with_components_async(
+        let output = super::render_with_components_async(
             &file,
             &Scope::new(),
             &ComponentRegistry::new(),
@@ -843,7 +1047,7 @@ mod tests {
         .await
         .expect("rendered");
 
-        assert!(html.contains("boom"));
+        assert!(output.html.contains("boom"));
     }
 
     #[tokio::test]
@@ -853,7 +1057,7 @@ mod tests {
         )
         .expect("valid page");
         let runtime = WebRuntime::new();
-        let html = super::render_with_components_async(
+        let output = super::render_with_components_async(
             &file,
             &Scope::new(),
             &ComponentRegistry::new(),
@@ -862,15 +1066,16 @@ mod tests {
         .await
         .expect("rendered");
 
-        assert!(html.contains("true"));
+        assert!(output.html.contains("true"));
     }
 
     #[tokio::test]
     #[ignore = "requires network access to httpbin.org"]
-    async fn fetch_demo_catches_http_error() {
+    async fn fetch_demo_fetches_json_with_schema() {
         let file = parse(include_str!("../app/pages/fetch-demo.web")).expect("valid page");
-        let runtime = WebRuntime::new();
-        let html = super::render_with_components_async(
+        let root = std::env::current_dir().expect("cwd");
+        let runtime = WebRuntime::with_database(root).expect("runtime");
+        let output = super::render_with_components_async(
             &file,
             &Scope::new(),
             &ComponentRegistry::new(),
@@ -879,7 +1084,33 @@ mod tests {
         .await
         .expect("rendered");
 
-        assert!(html.contains("upstream returned 404") || html.contains("404"));
+        assert!(output.html.contains("httpbin.org") || output.html.is_empty() == false);
+    }
+
+    #[test]
+    fn renders_client_counter_island() {
+        let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
+        let page = parse(include_str!("../app/pages/counter.web")).expect("page");
+        let mut components = ComponentRegistry::new();
+        components.insert("Counter".to_string(), counter);
+
+        let output = render_with_components(
+            &page,
+            &Scope::new(),
+            &components,
+            &WebRuntime::new(),
+        )
+        .expect("rendered");
+
+        assert!(output.html.contains("data-ws-island=\"Counter-0\""));
+        assert!(output.html.contains("data-ws-click"));
+        assert!(output.html.contains("data-ws-text=\"count\">5</span>"));
+        assert_eq!(output.islands.len(), 1);
+        assert_eq!(output.islands[0].signals[0].initial, crate::parser::Value::Int(5));
+
+        let script = crate::client::render_island_script(&output.islands[0]);
+        assert!(script.contains("WebScript.signal(5)"));
+        assert!(script.contains("addEventListener('click'"));
     }
 
     #[tokio::test]

@@ -1,3 +1,4 @@
+use crate::client::{self, render_island_script};
 use crate::debugbar::{RequestMetrics, TaskTrace};
 use crate::dev;
 use crate::diagnostic::{self, FileDiagnostic};
@@ -103,6 +104,16 @@ fn handle_connection(
             200,
             "application/javascript; charset=utf-8",
             dev::DevServer::dev_client_script(),
+        )
+        .map_err(io_diagnostic)?;
+        return Ok(());
+    }
+    if client::is_runtime_path(path) {
+        write_response(
+            &mut stream,
+            200,
+            "application/javascript; charset=utf-8",
+            client::client_runtime_script(),
         )
         .map_err(io_diagnostic)?;
         return Ok(());
@@ -216,12 +227,18 @@ fn handle_connection(
         &request_runtime,
     ));
     match render_result {
-        Ok(html) => {
+        Ok(output) => {
             metrics.push("Render", render_started.elapsed(), None);
             if let Ok(trace) = task_trace.lock() {
                 metrics.tasks = trace.spans().to_vec();
             }
             metrics.set_total(started.elapsed());
+            let client_scripts = output
+                .islands
+                .iter()
+                .map(render_island_script)
+                .collect::<String>();
+            let html = client::inject_client_scripts(&output.html, &client_scripts);
             write_response_with_headers(
                 &mut stream,
                 200,
