@@ -6,8 +6,8 @@ use crate::client::{
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
 use crate::parser::{
-    ClientBlock, ComponentCall, ComponentProp, LayoutUse, LetDecl, LetValue, PropValue,
-    SourceExpr, StyleBlock, TemplateNode, Value, WebFile,
+    ClientBlock, ComponentCall, ComponentProp, EventBinding, LayoutUse, LetDecl, LetValue,
+    PropValue, SourceExpr, StyleBlock, TemplateNode, Value, WebFile,
 };
 use crate::style;
 use crate::runtime::WebRuntime;
@@ -47,6 +47,13 @@ struct ClientValidateContext {
     handlers: BTreeSet<String>,
 }
 
+struct ForwardContext {
+    event_bindings: Vec<EventBinding>,
+    class_expr: Option<SourceExpr>,
+    value_signal: Option<String>,
+    applied: bool,
+}
+
 pub fn render_with_components(
     file: &WebFile,
     params: &Scope,
@@ -64,6 +71,8 @@ pub fn render_with_components(
     evaluate_lets(&file.lets, &mut scope)?;
     let mut context = RenderContext::default();
     let mut island = None;
+    let mut forward_state = None;
+    let shadowed = BTreeSet::new();
     let html = render_nodes(
         &file.template,
         &scope,
@@ -72,6 +81,8 @@ pub fn render_with_components(
         &mut context,
         &mut island,
         None,
+        &mut forward_state,
+        &shadowed,
     )?;
     let scope_id = scope_id_for_file(file);
     let html = apply_file_styles(file, &scope_id, &mut context, html);
@@ -98,6 +109,8 @@ pub async fn render_page_async(
     let scope = scope_for_async(file, params, runtime).await?;
     let mut context = RenderContext::default();
     let mut island = None;
+    let mut forward_state = None;
+    let shadowed = BTreeSet::new();
     let page_html = render_nodes(
         &file.template,
         &scope,
@@ -106,6 +119,8 @@ pub async fn render_page_async(
         &mut context,
         &mut island,
         None,
+        &mut forward_state,
+        &shadowed,
     )?;
 
     let layout_name = match &file.layout_use {
@@ -135,6 +150,8 @@ pub async fn render_page_async(
         &scope,
     )?;
     let mut layout_island = None;
+    let mut forward_state = None;
+    let shadowed = BTreeSet::new();
     let mut html = render_nodes(
         &layout_file.template,
         &layout_scope,
@@ -143,6 +160,8 @@ pub async fn render_page_async(
         &mut context,
         &mut layout_island,
         Some(&page_html),
+        &mut forward_state,
+        &shadowed,
     )?;
 
     let layout_scope_id = scope_id_for_file(layout_file);
@@ -540,6 +559,8 @@ fn render_nodes(
     context: &mut RenderContext,
     island: &mut Option<&mut IslandBuildState<'_>>,
     slot_content: Option<&str>,
+    forward_state: &mut Option<ForwardContext>,
+    shadowed_props: &BTreeSet<String>,
 ) -> Result<String, Diagnostic> {
     let mut html = String::new();
     let mut scope = scope.clone();
@@ -554,11 +575,13 @@ fn render_nodes(
             }
             TemplateNode::Expr(expr) => {
                 let in_value_attr = html.ends_with("value=");
-                html.push_str(&render_expr(expr, &scope, island, in_value_attr)?);
+                html.push_str(&render_expr(
+                    expr, &scope, island, in_value_attr, shadowed_props,
+                )?);
             }
             TemplateNode::Component(call) => {
                 html.push_str(&render_component(
-                    call, &scope, components, runtime, context,
+                    call, &scope, components, runtime, context, island,
                 )?);
             }
             TemplateNode::If {
@@ -607,6 +630,8 @@ fn render_nodes(
                         context,
                         island,
                         slot_content,
+                        forward_state,
+                        shadowed_props,
                     )?);
                     html.push_str("</div>");
 
@@ -623,6 +648,8 @@ fn render_nodes(
                             context,
                             island,
                             slot_content,
+                            forward_state,
+                            shadowed_props,
                         )?);
                         html.push_str("</div>");
                     }
@@ -643,6 +670,8 @@ fn render_nodes(
                         context,
                         island,
                         slot_content,
+                        forward_state,
+                        shadowed_props,
                     )?);
                 } else {
                     html.push_str(&render_nodes(
@@ -653,6 +682,8 @@ fn render_nodes(
                         context,
                         island,
                         slot_content,
+                        forward_state,
+                        shadowed_props,
                     )?);
                 }
             }
@@ -677,6 +708,8 @@ fn render_nodes(
                         context,
                         island,
                         slot_content,
+                        forward_state,
+                        shadowed_props,
                     )?);
                 }
             }
@@ -689,37 +722,7 @@ fn render_nodes(
                 scope.insert("session".to_string(), Value::Object(session));
             }
             TemplateNode::EventBinding(binding) => {
-                if let Some(island) = island.as_deref_mut() {
-                    let index = *island
-                        .event_counts
-                        .entry(binding.event.clone())
-                        .or_insert(0);
-                    island.event_counts.insert(binding.event.clone(), index + 1);
-                    let compile_ctx = HandlerCompileContext {
-                        signals: &island.signal_names,
-                        handlers: &island.handler_names,
-                        param: "event",
-                    };
-                    let handler = build_event_handler(binding, index, &compile_ctx)?;
-                    if binding.event == "input" || binding.event == "change" {
-                        if let Some(signal) =
-                            value_signal_from_field_handler(&binding.handler_source)
-                        {
-                            if island.signal_names.contains(&signal)
-                                && !island.manifest.value_bindings.iter().any(|value| {
-                                    value.signal == signal
-                                        && value.handler_index == index
-                                })
-                            {
-                                island.manifest.value_bindings.push(ValueBinding {
-                                    signal,
-                                    handler_index: index,
-                                });
-                            }
-                        }
-                    }
-                    island.manifest.event_handlers.push(handler);
-                }
+                register_event_binding(binding, island, false)?;
             }
         }
     }
@@ -732,10 +735,11 @@ fn render_expr(
     scope: &Scope,
     island: &mut Option<&mut IslandBuildState<'_>>,
     in_value_attr: bool,
+    shadowed_props: &BTreeSet<String>,
 ) -> Result<String, Diagnostic> {
     if let Some(island) = island.as_deref_mut() {
         if let Some(signal_name) = signal_expr_name(&expr.expr) {
-            if island.signal_names.contains(signal_name) {
+            if island.signal_names.contains(signal_name) && !shadowed_props.contains(signal_name) {
                 let value = evaluate_source_expr(expr, scope)?;
                 let type_name = island
                     .signal_types
@@ -801,12 +805,197 @@ fn signal_expr_name(expr: &expr::Expr) -> Option<&str> {
     }
 }
 
+fn apply_forward_bindings(
+    html: &str,
+    forward: &mut ForwardContext,
+    scope: &Scope,
+    island: &mut Option<&mut IslandBuildState<'_>>,
+) -> Result<String, Diagnostic> {
+    const MARKER: &str = "data-ws-bind";
+    let Some(marker_pos) = html.find(MARKER) else {
+        return Ok(html.to_string());
+    };
+
+    let tag_start = html[..marker_pos]
+        .rfind('<')
+        .ok_or_else(|| forward_bind_target_missing_at(1))?;
+    let after_marker = &html[marker_pos..];
+    let (tag_end, self_closing) = if let Some(index) = after_marker.find("/>") {
+        (marker_pos + index + 2, true)
+    } else if let Some(index) = after_marker.find('>') {
+        (marker_pos + index + 1, false)
+    } else {
+        return Err(forward_bind_target_missing_at(1));
+    };
+
+    let mut tag = html[tag_start..tag_end].to_string();
+    if self_closing {
+        let trimmed = tag.trim_end();
+        tag = trimmed
+            .strip_suffix("/>")
+            .or_else(|| trimmed.strip_suffix('>').and_then(|value| value.strip_suffix('/')))
+            .unwrap_or(trimmed)
+            .trim_end()
+            .to_string();
+    } else if tag.ends_with('>') {
+        tag.pop();
+    } else {
+        return Err(forward_bind_target_missing_at(1));
+    }
+
+    tag = tag.replace(" data-ws-bind", "");
+    if tag.contains(MARKER) {
+        tag = tag.replace(MARKER, "");
+    }
+
+    if let Some(class_expr) = &forward.class_expr {
+        let extra = evaluate_source_expr(class_expr, scope)?;
+        tag = merge_class_on_tag(&tag, &extra.render());
+    }
+
+    for binding in &forward.event_bindings {
+        tag.push_str(&format!(" data-ws-{}", binding.event));
+        register_event_binding(binding, island, true)?;
+    }
+
+    if let Some(signal) = &forward.value_signal {
+        tag.push_str(&format!(r#" data-ws-value="{signal}""#));
+    }
+
+    if self_closing {
+        tag.push_str(" />");
+    } else {
+        tag.push('>');
+    }
+    forward.applied = true;
+    Ok(format!(
+        "{}{}{}",
+        &html[..tag_start],
+        tag,
+        &html[tag_end..]
+    ))
+}
+
+fn merge_class_on_tag(tag: &str, extra: &str) -> String {
+    if extra.is_empty() {
+        return tag.to_string();
+    }
+
+    let Some(class_pos) = tag.find("class=") else {
+        return format!(r#"{tag} class="{extra}""#);
+    };
+
+    let value_start = class_pos + 6;
+    if tag.as_bytes().get(value_start) != Some(&b'"') {
+        return format!(r#"{tag} class="{extra}""#);
+    }
+
+    let inner_start = value_start + 1;
+    let Some(relative_end) = tag[inner_start..].find('"') else {
+        return format!(r#"{tag} class="{extra}""#);
+    };
+    let inner_end = inner_start + relative_end;
+    let existing = &tag[inner_start..inner_end];
+    let merged = if existing.is_empty() {
+        extra.to_string()
+    } else {
+        format!("{existing} {extra}")
+    };
+    format!(
+        "{}class=\"{}{}",
+        &tag[..class_pos],
+        merged,
+        &tag[inner_end..]
+    )
+}
+
+fn register_event_binding(
+    binding: &EventBinding,
+    island: &mut Option<&mut IslandBuildState<'_>>,
+    require_island: bool,
+) -> Result<(), Diagnostic> {
+    let Some(island) = island.as_deref_mut() else {
+        if require_island {
+            return Err(forwarded_event_outside_client(binding));
+        }
+        return Ok(());
+    };
+
+    let index = *island
+        .event_counts
+        .entry(binding.event.clone())
+        .or_insert(0);
+    island.event_counts.insert(binding.event.clone(), index + 1);
+    let compile_ctx = HandlerCompileContext {
+        signals: &island.signal_names,
+        handlers: &island.handler_names,
+        param: "event",
+    };
+    let handler = build_event_handler(binding, index, &compile_ctx)?;
+    if binding.event == "input" || binding.event == "change" {
+        if let Some(signal) = value_signal_from_field_handler(&binding.handler_source) {
+            if island.signal_names.contains(&signal)
+                && !island
+                    .manifest
+                    .value_bindings
+                    .iter()
+                    .any(|value| value.signal == signal && value.handler_index == index)
+            {
+                island.manifest.value_bindings.push(ValueBinding {
+                    signal,
+                    handler_index: index,
+                });
+            }
+        }
+    }
+    island.manifest.event_handlers.push(handler);
+    Ok(())
+}
+
+fn forwarded_event_outside_client(binding: &EventBinding) -> Diagnostic {
+    Diagnostic::error(
+        Span::new(binding.line, binding.column, binding.column + 1),
+        format!(
+            "@{event} on a component call requires a parent `@client` block",
+            event = binding.event
+        ),
+        None,
+    )
+}
+
+fn forward_bind_target_missing(call: &ComponentCall) -> Diagnostic {
+    Diagnostic::error(
+        Span::identifier(call.line, call.column, &call.name),
+        format!(
+            "component `{name}` has no `data-ws-bind` target for forwarded attributes",
+            name = call.name
+        ),
+        Some("add `data-ws-bind` to the element that should receive events and class".to_string()),
+    )
+}
+
+fn forward_bind_target_missing_at(line: usize) -> Diagnostic {
+    Diagnostic::error(
+        Span::at(line, 1),
+        "malformed `data-ws-bind` target",
+        None,
+    )
+}
+
+fn component_template_has_bind_target(component: &WebFile) -> bool {
+    component
+        .template
+        .iter()
+        .any(|node| matches!(node, TemplateNode::Text(text) if text.contains("data-ws-bind")))
+}
+
 fn render_component(
     call: &ComponentCall,
     scope: &Scope,
     components: &ComponentRegistry,
     runtime: &WebRuntime,
     context: &mut RenderContext,
+    island: &mut Option<&mut IslandBuildState<'_>>,
 ) -> Result<String, Diagnostic> {
     let component = components
         .get(&call.name)
@@ -825,16 +1014,56 @@ fn render_component(
         );
     }
 
-    let mut island = None;
-    let html = render_nodes(
+    let declaration = component.component.as_ref().expect("component checked");
+    let shadowed: BTreeSet<String> = declaration
+        .props
+        .iter()
+        .map(|prop| prop.name.clone())
+        .collect();
+    let value_signal = call
+        .props
+        .iter()
+        .find(|prop| prop.name == "value")
+        .and_then(|prop| {
+            if let PropValue::Expr(expr) = &prop.value {
+                signal_expr_name(&expr.expr).and_then(|signal| {
+                    island
+                        .as_ref()
+                        .and_then(|state| state.signal_names.contains(signal).then_some(signal))
+                        .map(str::to_string)
+                })
+            } else {
+                None
+            }
+        });
+    let has_forward = !call.event_bindings.is_empty()
+        || call.class_expr.is_some()
+        || value_signal.is_some();
+    let mut forward_state = has_forward.then(|| ForwardContext {
+        event_bindings: call.event_bindings.clone(),
+        class_expr: call.class_expr.clone(),
+        value_signal,
+        applied: false,
+    });
+    let mut html = render_nodes(
         &component.template,
         &component_scope,
         components,
         runtime,
         context,
-        &mut island,
+        island,
         None,
+        &mut forward_state,
+        &shadowed,
     )?;
+    if let Some(forward) = &mut forward_state {
+        if !forward.applied && has_forward {
+            html = apply_forward_bindings(&html, forward, scope, island)?;
+        }
+        if !forward.applied && has_forward {
+            return Err(forward_bind_target_missing(call));
+        }
+    }
     let scope_id = component
         .component
         .as_ref()
@@ -915,6 +1144,8 @@ fn render_client_component(
     };
 
     let mut island_ref = Some(&mut island_state);
+    let mut forward_state = None;
+    let shadowed = BTreeSet::new();
     let inner = render_nodes(
         &component.template,
         &render_scope,
@@ -923,6 +1154,8 @@ fn render_client_component(
         context,
         &mut island_ref,
         None,
+        &mut forward_state,
+        &shadowed,
     )?;
 
     let inner = index_event_attributes(&inner, &manifest.event_handlers);
@@ -1035,7 +1268,7 @@ fn validate_nodes(
                 }
             }
             TemplateNode::Component(call) => {
-                validate_component_call(call, &scope, components, diagnostics)
+                validate_component_call(call, &scope, components, client_ctx, diagnostics)
             }
             TemplateNode::If {
                 condition,
@@ -1125,6 +1358,7 @@ fn validate_component_call(
     call: &ComponentCall,
     scope: &Scope,
     components: &ComponentRegistry,
+    client_ctx: Option<&ClientValidateContext>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let Some(component) = components.get(&call.name) else {
@@ -1165,6 +1399,35 @@ fn validate_component_call(
         if prop.default.is_none() && !provided.contains_key(&prop.name) {
             diagnostics.push(missing_prop(call, &prop.name));
         }
+    }
+
+    if let Some(class_expr) = &call.class_expr {
+        if let Err(error) = evaluate_source_expr(class_expr, scope) {
+            diagnostics.push(error);
+        }
+    }
+
+    if client_ctx.is_none() {
+        for binding in &call.event_bindings {
+            diagnostics.push(forwarded_event_outside_client(binding));
+        }
+    } else if !call.event_bindings.is_empty() {
+        let ctx = client_ctx.expect("client context checked");
+        let compile_ctx = HandlerCompileContext {
+            signals: &ctx.signals,
+            handlers: &ctx.handlers,
+            param: "event",
+        };
+        for binding in &call.event_bindings {
+            if let Err(error) = build_event_handler(binding, 0, &compile_ctx) {
+                diagnostics.push(error);
+            }
+        }
+    }
+
+    let has_forward = !call.event_bindings.is_empty() || call.class_expr.is_some();
+    if has_forward && !component_template_has_bind_target(component) {
+        diagnostics.push(forward_bind_target_missing(call));
     }
 }
 
@@ -1419,8 +1682,35 @@ fn escape_html(value: &str) -> String {
 mod tests {
     use super::{render_with_components, ComponentRegistry, Scope};
     use crate::diagnostic::Span;
-    use crate::parser::parse;
+    use crate::parser::{parse, WebFile};
     use crate::runtime::WebRuntime;
+
+    fn register_ui_primitives(components: &mut ComponentRegistry) {
+        let primitives = [
+            ("UI.Button", include_str!("../app/components/UI/Button.web")),
+            ("UI.Input", include_str!("../app/components/UI/Input.web")),
+            ("UI.Label", include_str!("../app/components/UI/Label.web")),
+            ("UI.Card", include_str!("../app/components/UI/Card.web")),
+            ("UI.Separator", include_str!("../app/components/UI/Separator.web")),
+        ];
+        for (name, source) in primitives {
+            let file = parse(source).expect("ui primitive");
+            components.insert(name.to_string(), file);
+        }
+    }
+
+    fn with_ui_primitives(component: WebFile) -> ComponentRegistry {
+        let mut components = ComponentRegistry::new();
+        register_ui_primitives(&mut components);
+        let name = component
+            .component
+            .as_ref()
+            .expect("component declaration")
+            .name
+            .clone();
+        components.insert(name, component);
+        components
+    }
 
     #[test]
     fn renders_known_expressions_with_escaping() {
@@ -1669,8 +1959,7 @@ mod tests {
         let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
         let page = parse("@page \"/counter\"\n\n<Counter initial={5} label=\"Score\" />")
             .expect("page");
-        let mut components = ComponentRegistry::new();
-        components.insert("Counter".to_string(), counter);
+        let components = with_ui_primitives(counter);
 
         let output = render_with_components(
             &page,
@@ -1683,6 +1972,11 @@ mod tests {
         assert!(output.html.contains("data-ws-island=\"Counter-0\""));
         assert!(output.html.contains("data-ws-click=\"0\""));
         assert!(output.html.contains("data-ws-click=\"1\""));
+        assert!(
+            !output.html.contains(r#""> data-ws-click="#),
+            "click handler must be on the opening tag, not in button text: {}",
+            output.html
+        );
         assert!(output.html.contains("data-ws-text=\"count\">5</span>"));
         assert_eq!(output.islands.len(), 1);
         assert_eq!(output.islands[0].signals[0].initial, crate::parser::Value::Int(5));
@@ -1697,8 +1991,7 @@ mod tests {
     fn renders_client_details_toggle_island() {
         let details = parse(include_str!("../app/components/Details.web")).expect("details");
         let page = parse("@page \"/\"\n\n<Details title=\"Notes\" />").expect("page");
-        let mut components = ComponentRegistry::new();
-        components.insert("Details".to_string(), details);
+        let components = with_ui_primitives(details);
 
         let output = render_with_components(
             &page,
@@ -1719,8 +2012,7 @@ mod tests {
     fn renders_client_greeting_input_island() {
         let greeting = parse(include_str!("../app/components/Greeting.web")).expect("greeting");
         let page = parse("@page \"/\"\n\n<Greeting />").expect("page");
-        let mut components = ComponentRegistry::new();
-        components.insert("Greeting".to_string(), greeting);
+        let components = with_ui_primitives(greeting);
 
         let output = render_with_components(
             &page,
@@ -1734,6 +2026,18 @@ mod tests {
             output.html.contains("data-ws-input=\"0\" data-ws-value=\"name\"")
                 || output.html.contains("data-ws-value=\"name\" data-ws-input=\"0\"")
         );
+        assert!(
+            !output.html.contains(r#"name="<span data-ws-text"#),
+            "input name prop must not bind as text spans: {}",
+            output.html
+        );
+        assert!(
+            output.html.contains("id=greeting-name")
+                && output.html.contains("data-ws-input=\"0\"")
+                && output.html.contains("data-ws-value=\"name\""),
+            "expected intact input with forwarded bindings: {}",
+            output.html
+        );
         let script = crate::client::render_island_script(&output.islands[0]);
         assert!(script.contains("addEventListener('input'"));
         assert!(script.contains("value_name"));
@@ -1743,8 +2047,7 @@ mod tests {
     fn renders_event_demo_submit_prevent() {
         let demo = parse(include_str!("../app/components/EventDemo.web")).expect("event demo");
         let page = parse("@page \"/\"\n\n<EventDemo />").expect("page");
-        let mut components = ComponentRegistry::new();
-        components.insert("EventDemo".to_string(), demo);
+        let components = with_ui_primitives(demo);
 
         let output = render_with_components(
             &page,
@@ -1823,8 +2126,7 @@ mod tests {
         let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
         let page = parse("@page \"/counter\"\n\n<Counter initial={5} label=\"Score\" />")
             .expect("page");
-        let mut components = ComponentRegistry::new();
-        components.insert("Counter".to_string(), counter);
+        let components = with_ui_primitives(counter);
 
         let output = render_with_components(
             &page,
@@ -1870,8 +2172,7 @@ mod tests {
             "@page \"/counter\"\n\n<Counter initial={1} />\n<Counter initial={2} />",
         )
         .expect("page");
-        let mut components = ComponentRegistry::new();
-        components.insert("Counter".to_string(), counter);
+        let components = with_ui_primitives(counter);
 
         let output = render_with_components(
             &page,
@@ -1881,7 +2182,8 @@ mod tests {
         )
         .expect("rendered");
 
-        assert_eq!(output.scoped_styles.len(), 1);
+        assert!(output.scoped_styles.contains_key("Counter"));
+        assert!(output.scoped_styles.contains_key("UI.Button"));
         assert_eq!(output.html.matches(r#"data-ws-style="Counter""#).count(), 2);
     }
 }

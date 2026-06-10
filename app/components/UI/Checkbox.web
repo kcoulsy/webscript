@@ -3,20 +3,21 @@
   label: string = ""
   checked: bool = false
   disabled: bool = false
+  class: string = ""
 }
 
-<label class="ui-checkbox">
+<label class={"ui-checkbox " + class}>
   @if disabled {
     @if checked {
-      <input type="checkbox" name={name} checked disabled />
+      <input type="checkbox" name={name} data-ws-bind checked disabled />
     } @else {
-      <input type="checkbox" name={name} disabled />
+      <input type="checkbox" name={name} data-ws-bind disabled />
     }
   } @else {
     @if checked {
-      <input type="checkbox" name={name} checked />
+      <input type="checkbox" name={name} data-ws-bind checked />
     } @else {
-      <input type="checkbox" name={name} />
+      <input type="checkbox" name={name} data-ws-bind />
     }
   }
   @if label != "" {

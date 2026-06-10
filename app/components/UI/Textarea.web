@@ -5,31 +5,35 @@
   rows: int = 4
   disabled: bool = false
   required: bool = false
+  class: string = ""
 }
 
 @if disabled {
   <textarea
-    class="ui-textarea"
+    class={"ui-textarea " + class}
     name={name}
     rows={rows}
     placeholder={placeholder}
+    data-ws-bind
     disabled
   >{value}</textarea>
 } @else {
   @if required {
     <textarea
-      class="ui-textarea"
+      class={"ui-textarea " + class}
       name={name}
       rows={rows}
       placeholder={placeholder}
+      data-ws-bind
       required
     >{value}</textarea>
   } @else {
     <textarea
-      class="ui-textarea"
+      class={"ui-textarea " + class}
       name={name}
       rows={rows}
       placeholder={placeholder}
+      data-ws-bind
     >{value}</textarea>
   }
 }

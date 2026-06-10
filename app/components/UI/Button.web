@@ -4,14 +4,15 @@
   size: string = "default"
   type: string = "button"
   disabled: bool = false
+  class: string = ""
 }
 
 @if disabled {
-  <button type={type} class="ui-button" data-variant={variant} data-size={size} disabled>
+  <button type={type} class={"ui-button " + class} data-variant={variant} data-size={size} data-ws-bind disabled>
     {label}
   </button>
 } @else {
-  <button type={type} class="ui-button" data-variant={variant} data-size={size}>
+  <button type={type} class={"ui-button " + class} data-variant={variant} data-size={size} data-ws-bind>
     {label}
   </button>
 }

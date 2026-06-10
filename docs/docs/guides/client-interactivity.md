@@ -110,6 +110,15 @@ Handlers are functions. Use pipe-lambda syntax for inline handlers:
 <form @submit.prevent={|event| save()}>Save</form>
 ```
 
+Use UI primitives instead of raw markup in client islands:
+
+```web
+<UI.Button label="+" variant="outline" size="sm" @click={count++} />
+<UI.Input id="name" value={name} @input={|event| name = event.target.value} />
+```
+
+Events and `class` on component calls are forwarded to the primitive's `data-ws-bind` target.
+
 Shorthand sugar (desugared to `|event| ...`):
 
 ```web

@@ -172,6 +172,8 @@ pub struct SourceExpr {
 pub struct ComponentCall {
     pub name: String,
     pub props: Vec<ComponentProp>,
+    pub event_bindings: Vec<EventBinding>,
+    pub class_expr: Option<SourceExpr>,
     pub line: usize,
     pub column: usize,
 }
@@ -1185,7 +1187,10 @@ fn parse_component_call_line(
         return Ok(None);
     }
 
-    let inner = trimmed[1..trimmed.len() - 2].trim();
+    let (line_without_events, event_bindings) =
+        extract_event_bindings(trimmed, line_number, false)?;
+
+    let inner = line_without_events[1..line_without_events.len() - 2].trim();
     let Some((name, rest)) = split_tag_name(inner) else {
         return Ok(None);
     };
@@ -1197,12 +1202,17 @@ fn parse_component_call_line(
     let rest_column = if rest.is_empty() {
         column + 1 + name.len()
     } else {
-        raw_line.find(rest).map(|index| index + 1).unwrap_or(column)
+        line_without_events
+            .find(rest)
+            .map(|index| index + 1)
+            .unwrap_or(column)
     };
-    let props = parse_component_props(rest, line_number, rest_column)?;
+    let (props, class_expr) = parse_component_props(rest, line_number, rest_column)?;
     Ok(Some(ComponentCall {
         name: name.to_string(),
         props,
+        event_bindings,
+        class_expr,
         line: line_number,
         column,
     }))
@@ -1235,8 +1245,9 @@ fn parse_component_props(
     value: &str,
     line_number: usize,
     start_column: usize,
-) -> Result<Vec<ComponentProp>, Diagnostic> {
+) -> Result<(Vec<ComponentProp>, Option<SourceExpr>), Diagnostic> {
     let mut props = Vec::new();
+    let mut class_expr = None;
     let mut rest = value.trim();
     let mut rest_column = start_column + (value.len() - rest.len());
 
@@ -1260,14 +1271,22 @@ fn parse_component_props(
         let leading_trim = rest[value_start..].len() - after_eq.len();
         let value_start_col = rest_column + eq_index + 1 + leading_trim;
         let (value, consumed) = parse_prop_value(after_eq, line_number, value_start_col)?;
-        props.push(ComponentProp {
-            name: name.to_string(),
-            value,
-            line: line_number,
-            column: name_column,
-            value_start_col,
-            value_end_col: value_start_col + consumed,
-        });
+        if name == "class" {
+            class_expr = Some(prop_value_to_source_expr(
+                &value,
+                line_number,
+                value_start_col,
+            )?);
+        } else {
+            props.push(ComponentProp {
+                name: name.to_string(),
+                value,
+                line: line_number,
+                column: name_column,
+                value_start_col,
+                value_end_col: value_start_col + consumed,
+            });
+        }
         let next = &after_eq[consumed..];
         let skipped = next.len() - next.trim_start().len();
         rest_column +=
@@ -1275,7 +1294,23 @@ fn parse_component_props(
         rest = next.trim_start();
     }
 
-    Ok(props)
+    Ok((props, class_expr))
+}
+
+fn prop_value_to_source_expr(
+    value: &PropValue,
+    line_number: usize,
+    column: usize,
+) -> Result<SourceExpr, Diagnostic> {
+    match value {
+        PropValue::Literal(literal) => Ok(SourceExpr {
+            source: literal.render(),
+            expr: expr::Expr::Literal(literal.clone()),
+            line: line_number,
+            column,
+        }),
+        PropValue::Expr(expr) => Ok(expr.clone()),
+    }
 }
 
 fn parse_prop_value(
@@ -1521,6 +1556,7 @@ fn parse_event_directive(rest: &str) -> Option<(String, bool, bool, usize)> {
 fn extract_event_bindings(
     line: &str,
     line_number: usize,
+    emit_markers: bool,
 ) -> Result<(String, Vec<EventBinding>), Diagnostic> {
     let mut bindings = Vec::new();
     let mut output = String::new();
@@ -1591,8 +1627,10 @@ fn extract_event_bindings(
             stop_propagation,
         });
 
-        let event_name = bindings.last().expect("binding").event.clone();
-        output.push_str(&format!(" data-ws-{event_name}"));
+        if emit_markers {
+            let event_name = bindings.last().expect("binding").event.clone();
+            output.push_str(&format!(" data-ws-{event_name}"));
+        }
         offset = start + handler_end + 1;
     }
 
@@ -1604,7 +1642,7 @@ fn is_slot_tag(value: &str) -> bool {
 }
 
 fn parse_text_line(line: &str, line_number: usize) -> Result<Vec<TemplateNode>, Diagnostic> {
-    let (line, event_bindings) = extract_event_bindings(line, line_number)?;
+    let (line, event_bindings) = extract_event_bindings(line, line_number, true)?;
 
     let mut nodes = Vec::new();
     let mut offset = 0;
@@ -2270,6 +2308,29 @@ mod tests {
             call.props[0].value,
             PropValue::Literal(Value::String(ref label)) if label == "Save"
         ));
+    }
+
+    #[test]
+    fn parses_component_call_with_event_and_class() {
+        let page = parse(
+            "@page \"/\"\n\n<UI.Button label=\"+\" variant=\"outline\" size=\"sm\" class=\"w-full\" @click={count++} />",
+        )
+        .expect("valid page");
+
+        let TemplateNode::Component(call) = &page.template[0] else {
+            panic!("expected component call");
+        };
+        assert_eq!(call.name, "UI.Button");
+        assert_eq!(call.event_bindings.len(), 1);
+        assert_eq!(call.event_bindings[0].event, "click");
+        assert_eq!(call.event_bindings[0].handler_source, "count++");
+        assert!(call.class_expr.is_some());
+        assert!(
+            call.props
+                .iter()
+                .all(|prop| prop.name != "class"),
+            "class should be extracted as passthrough, not a prop"
+        );
     }
 
     #[test]

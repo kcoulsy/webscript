@@ -7,13 +7,11 @@
 }
 
 <section class="details">
-  <button type="button" class="ui-button" data-variant="outline" data-size="sm" @click={open = !open}>
-    @if open {
-      Hide {title}
-    } @else {
-      Show {title}
-    }
-  </button>
+  @if open {
+    <UI.Button label={"Hide " + title} variant="outline" size="sm" @click={open = !open} />
+  } @else {
+    <UI.Button label={"Show " + title} variant="outline" size="sm" @click={open = !open} />
+  }
 
   @if open {
     <div class="details-panel">

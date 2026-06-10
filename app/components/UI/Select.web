@@ -4,10 +4,11 @@
   options: string[] = []
   placeholder: string = "Select an option"
   disabled: bool = false
+  class: string = ""
 }
 
 @if disabled {
-  <select class="ui-select" name={name} disabled>
+  <select class={"ui-select " + class} name={name} data-ws-bind disabled>
     @if value == "" {
       <option value="" selected disabled>{placeholder}</option>
     }
@@ -16,7 +17,7 @@
     }
   </select>
 } @else {
-  <select class="ui-select" name={name}>
+  <select class={"ui-select " + class} name={name} data-ws-bind>
     @if value == "" {
       <option value="" selected disabled>{placeholder}</option>
     }

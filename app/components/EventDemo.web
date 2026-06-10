@@ -15,14 +15,13 @@
 <div class="event-demo">
   <form @submit.prevent={|event| save()} class="form-stack">
     <UI.Label text="Note (@change updates signal)" target="event-note" />
-    <input
+    <UI.Input
       id="event-note"
-      class="ui-input"
       name="note"
-      @change={|event| note = event.target.value}
       value={note}
+      @change={|event| note = event.target.value}
     />
-    <button type="submit" class="ui-button" data-variant="default" data-size="default">Save (@submit.prevent)</button>
+    <UI.Button label="Save (@submit.prevent)" type="submit" />
   </form>
 
   @if submitted {
@@ -32,13 +31,12 @@
   <UI.Separator />
 
   <UI.Label text="Keyboard (@keydown increments counter; Enter saves)" target="event-keys" />
-  <input
+  <UI.Input
     id="event-keys"
-    class="ui-input"
+    placeholder="Type here — watch key count"
     @keydown={|event| { keyCount = keyCount + 1; event.key == "Enter" && save() }}
     @focus={|event| status = "focused"}
     @blur={status = "blurred"}
-    placeholder="Type here — watch key count"
   />
   <p class="event-meta">Keys pressed: {keyCount}</p>
   <p class="event-meta">Status: {status}</p>

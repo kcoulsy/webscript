@@ -8,12 +8,11 @@
 
 <div class="greeting">
   <UI.Label text="Name" target="greeting-name" />
-  <input
+  <UI.Input
     id="greeting-name"
-    class="ui-input"
-    @input={|event| name = event.target.value}
     value={name}
     placeholder={placeholder}
+    @input={|event| name = event.target.value}
   />
   <p class="greeting-output">Hello, {name}!</p>
 </div>

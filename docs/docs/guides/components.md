@@ -211,6 +211,35 @@ Use the qualified name in templates:
 
 Each dot-separated segment must be PascalCase (`UI.Button`, `UI.Forms.TextInput`). Folders under `app/components/` are for organization only — the registry key comes from the `@component` declaration, not the file path.
 
+## Event and Class Passthrough
+
+Component calls can forward client events and extra classes to an inner element marked with `data-ws-bind`:
+
+```web
+@client {
+  count: signal<int> = 0
+}
+
+<UI.Button label="+" variant="outline" size="sm" @click={count++} />
+<UI.Input id="name" value={name} class="w-full" @input={|event| name = event.target.value} />
+```
+
+- `@click`, `@input`, `@change`, and other client events work on component calls inside `@client` blocks.
+- `class="..."` or `class={expr}` on a component call is merged onto the bind target.
+- The child component must mark its interactive root with `data-ws-bind` (all `UI.*` primitives do this).
+
+Custom components that should receive forwarded events:
+
+```web
+@component ClickableCard {
+  title: string
+}
+
+<div class="card">
+  <button type="button" class="card-action" data-ws-bind>{title}</button>
+</div>
+```
+
 ## Component Boundaries
 
 A component should own:
