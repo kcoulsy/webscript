@@ -1,7 +1,7 @@
 @layout AppLayout {
 }
 
-<header class="app-layout">
+<header class="app-layout bg-red-500">
   <nav aria-label="Main">
     <a href="/">Home</a>
     <a href="/todos">Todos</a>

@@ -5,6 +5,7 @@ use crate::diagnostic::{self, FileDiagnostic};
 use crate::project;
 use crate::render;
 use crate::runtime::WebRuntime;
+use crate::tailwind;
 use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
@@ -31,6 +32,7 @@ pub async fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String>
     let listener = TcpListener::bind(&address).map_err(|error| error.to_string())?;
     println!("WebScript dev server listening on http://{address}");
     let project_runtime = Arc::new(Mutex::new(project::ProjectRuntime::new(root.clone())));
+    let tailwind_cache = Arc::new(Mutex::new(tailwind::TailwindCache::new()));
     let web_runtime = Arc::new(WebRuntime::with_database(root.clone())?);
     let sessions = Arc::new(Mutex::new(std::collections::BTreeMap::new()));
     let dev_server = dev::DevServer::start(root.clone());
@@ -41,6 +43,7 @@ pub async fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String>
             Ok(stream) => {
                 let root = root.clone();
                 let project_runtime = Arc::clone(&project_runtime);
+                let tailwind_cache = Arc::clone(&tailwind_cache);
                 let web_runtime = Arc::clone(&web_runtime);
                 let sessions = Arc::clone(&sessions);
                 let dev_server = dev_server.clone();
@@ -49,6 +52,7 @@ pub async fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String>
                     if let Err(diagnostic) = handle_connection(
                         &root,
                         &project_runtime,
+                        &tailwind_cache,
                         &web_runtime,
                         &sessions,
                         &dev_server,
@@ -69,6 +73,7 @@ pub async fn serve(root: PathBuf, host: String, port: u16) -> Result<(), String>
 fn handle_connection(
     root: &Path,
     project_runtime: &Arc<Mutex<project::ProjectRuntime>>,
+    tailwind_cache: &Arc<Mutex<tailwind::TailwindCache>>,
     web_runtime: &Arc<WebRuntime>,
     sessions: &SessionStore,
     dev_server: &dev::DevServer,
@@ -116,6 +121,20 @@ fn handle_connection(
             client::client_runtime_script(),
         )
         .map_err(io_diagnostic)?;
+        return Ok(());
+    }
+    if path == tailwind::STYLESHEET_PATH {
+        if !tailwind::enabled(root) {
+            write_response(&mut stream, 404, "text/plain", "Not Found")
+                .map_err(|error| io_diagnostic(error))?;
+            return Ok(());
+        }
+        let css = tailwind_cache
+            .lock()
+            .map_err(|_| io_diagnostic("tailwind cache lock poisoned".to_string()))?
+            .stylesheet(root)
+            .map_err(io_diagnostic)?;
+        write_response(&mut stream, 200, "text/css; charset=utf-8", &css).map_err(io_diagnostic)?;
         return Ok(());
     }
 
@@ -277,7 +296,12 @@ fn handle_connection(
             metrics.set_total(started.elapsed());
             let style_fragment =
                 crate::style::render_style_tags(&output.global_styles, &output.scoped_styles);
-            let html = crate::style::inject_styles(&output.html, &style_fragment);
+            let html = if tailwind::enabled(root) {
+                crate::style::inject_head_fragment(&output.html, tailwind::STYLESHEET_LINK)
+            } else {
+                output.html.clone()
+            };
+            let html = crate::style::inject_styles(&html, &style_fragment);
             let client_scripts = output
                 .islands
                 .iter()

@@ -131,6 +131,25 @@ pub fn inject_styles(html: &str, style_fragment: &str) -> String {
     }
 }
 
+pub fn inject_head_fragment(html: &str, fragment: &str) -> String {
+    if fragment.is_empty() {
+        return html.to_string();
+    }
+
+    if let Some(index) = html.rfind("</head>") {
+        let mut injected = String::with_capacity(html.len() + fragment.len());
+        injected.push_str(&html[..index]);
+        injected.push_str(fragment);
+        injected.push_str(&html[index..]);
+        injected
+    } else {
+        let mut injected = String::with_capacity(html.len() + fragment.len());
+        injected.push_str(fragment);
+        injected.push_str(html);
+        injected
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -166,5 +185,12 @@ mod tests {
         let html = "<html><body><main></main></body></html>";
         let injected = inject_styles(html, "<style>.a{}</style>");
         assert!(injected.contains("<style>.a{}</style></body>"));
+    }
+
+    #[test]
+    fn injects_head_fragment_before_head_close() {
+        let html = "<html><head><title>x</title></head><body></body></html>";
+        let injected = inject_head_fragment(html, r#"<link href="/x.css">"#);
+        assert!(injected.contains(r#"<link href="/x.css"></head>"#));
     }
 }

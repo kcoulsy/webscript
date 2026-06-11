@@ -15,6 +15,7 @@ mod schema_runtime;
 mod server;
 mod stmt;
 mod style;
+mod tailwind;
 mod types;
 mod validate;
 

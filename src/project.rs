@@ -4,6 +4,7 @@ use crate::parser;
 use crate::parser::Value;
 use crate::render::{self, Scope};
 use crate::schema;
+use crate::tailwind;
 use crate::validate;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
@@ -399,6 +400,21 @@ pub fn check_project(root: &Path) -> Result<Vec<FileDiagnostic>, String> {
 
     diagnostics.extend(db::check_models(root)?);
     diagnostics.extend(schema::check_schemas(root)?);
+    if tailwind::enabled(root) {
+        if let Err(error) = tailwind::generate_project_css(root) {
+            let config_path = root.join("web.config");
+            let source = fs::read_to_string(&config_path).unwrap_or_default();
+            diagnostics.push(FileDiagnostic::new(
+                config_path,
+                source,
+                Diagnostic::error(
+                    Span::at(1, 1),
+                    format!("tailwind generation failed: {error}"),
+                    None,
+                ),
+            ));
+        }
+    }
 
     Ok(diagnostics)
 }

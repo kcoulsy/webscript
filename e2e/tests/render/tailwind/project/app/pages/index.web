@@ -1,0 +1,7 @@
+@page "/"
+
+<main>
+  <section data-testid="tailwind-panel" class="flex bg-blue-500 text-white px-4 py-2 rounded-lg">
+    <h1>Tailwind utilities</h1>
+  </section>
+</main>
