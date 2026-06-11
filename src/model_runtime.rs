@@ -93,6 +93,28 @@ impl ModelRuntime {
                     vec![id.to_string()],
                 )
             }
+            "findByEmail" => {
+                if !model.fields.iter().any(|field| field.name == "email") {
+                    return Err(format!(
+                        "{model_name}.findByEmail requires an `email` field"
+                    ));
+                }
+                let email = expect_string(args, 0, &format!("{model_name}.findByEmail"))?;
+                let sql = format!(
+                    "SELECT * FROM {} WHERE {} = ?1 LIMIT 1",
+                    quote_ident(&model.name),
+                    quote_ident("email")
+                );
+                find_by_string_sql(
+                    &connection,
+                    model,
+                    &sql,
+                    &email,
+                    trace,
+                    format!("{model_name}.findByEmail"),
+                    vec![email.clone()],
+                )
+            }
             "create" => {
                 let fields = expect_object(args, 0, &format!("{model_name}.create"))?;
                 insert_row(&connection, model, &fields, trace)
@@ -270,6 +292,33 @@ fn find_by_sql<const N: usize>(
     result
 }
 
+fn find_by_string_sql(
+    connection: &Connection,
+    model: &ModelDecl,
+    sql: &str,
+    param: &str,
+    trace: Option<&Arc<Mutex<TaskTrace>>>,
+    label: String,
+    param_labels: Vec<String>,
+) -> Result<Value, String> {
+    let query = begin_model_query(trace, label, sql.to_string(), param_labels);
+    let result = (|| {
+        let mut statement = connection
+            .prepare(sql)
+            .map_err(|error| error.to_string())?;
+        let mut rows = statement
+            .query_map([param], |row| row_to_value(row, model))
+            .map_err(|error| error.to_string())?;
+        match rows.next() {
+            Some(Ok(value)) => Ok(value),
+            Some(Err(error)) => Err(error.to_string()),
+            None => Ok(not_found_object(model)),
+        }
+    })();
+    finish_model_query(trace, query, &result);
+    result
+}
+
 fn row_to_value(row: &Row<'_>, model: &ModelDecl) -> rusqlite::Result<Value> {
     let mut fields = BTreeMap::new();
     for field in &model.fields {
@@ -380,6 +429,33 @@ fn expect_object<'a>(
 
 fn empty_object() -> Value {
     Value::Object(BTreeMap::new())
+}
+
+fn not_found_object(model: &ModelDecl) -> Value {
+    let mut fields = BTreeMap::new();
+    for field in &model.fields {
+        let value = match field.type_name.as_str() {
+            "int" => Value::Int(0),
+            "bool" => Value::Bool(false),
+            "float" => Value::Int(0),
+            _ => Value::String(String::new()),
+        };
+        fields.insert(field.name.clone(), value);
+    }
+    Value::Object(fields)
+}
+
+fn expect_string(args: &[Value], index: usize, name: &str) -> Result<String, String> {
+    let value = args
+        .get(index)
+        .ok_or_else(|| format!("{name} expects argument {}", index + 1))?;
+    match value {
+        Value::String(text) => Ok(text.clone()),
+        other => Err(format!(
+            "{name} expects string, found `{}`",
+            other.type_name()
+        )),
+    }
 }
 
 #[cfg(test)]

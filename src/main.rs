@@ -1,4 +1,5 @@
 mod client;
+mod crypto_runtime;
 mod db;
 mod db_runtime;
 mod debugbar;

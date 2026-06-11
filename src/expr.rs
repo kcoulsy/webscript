@@ -1,3 +1,4 @@
+use crate::crypto_runtime;
 use crate::diagnostic::{Diagnostic, Span};
 use crate::parser::Value;
 use std::collections::BTreeMap;
@@ -8,6 +9,7 @@ pub type Env = BTreeMap<String, Value>;
 pub enum Expr {
     Literal(Value),
     Path(Vec<String>),
+    Array(Vec<Expr>),
     Call {
         callee: Box<Expr>,
         args: Vec<Expr>,
@@ -65,6 +67,18 @@ pub fn evaluate(expr: &Expr, env: &Env, line: usize, column: usize) -> Result<Va
     match expr {
         Expr::Literal(value) => Ok(value.clone()),
         Expr::Path(path) => evaluate_path(path, env, line, column),
+        Expr::Array(elements) => {
+            let values: Result<Vec<Value>, Diagnostic> = elements
+                .iter()
+                .map(|element| evaluate(element, env, line, column))
+                .collect();
+            let values = values?;
+            let element_type = infer_array_element_type(&values);
+            Ok(Value::Array {
+                element_type,
+                values,
+            })
+        }
         Expr::Call { callee, args } => evaluate_call(callee, args, env, line, column),
         Expr::Await { .. } => Err(Diagnostic::error(
             Span::at(line, column),
@@ -138,6 +152,14 @@ fn evaluate_call(
             None,
         ));
     };
+    if let Some(method) = crypto_runtime::method_name(path) {
+        let mut evaluated_args = Vec::with_capacity(args.len());
+        for arg in args {
+            evaluated_args.push(evaluate(arg, env, line, column)?);
+        }
+        return crypto_runtime::call(&method, &evaluated_args, line, column);
+    }
+
     let Some(name) = path.first() else {
         return Err(Diagnostic::error(
             Span::at(line, column),
@@ -763,22 +785,11 @@ impl ExprParser {
         let mut values = Vec::new();
 
         if self.match_token(TokenKind::RBracket) {
-            return Ok(Expr::Literal(Value::Array {
-                element_type: "unknown".to_string(),
-                values,
-            }));
+            return Ok(Expr::Array(values));
         }
 
         loop {
-            let value = self.parse_or()?;
-            let Expr::Literal(value) = value else {
-                return Err(Diagnostic::error(
-                    self.previous_span(),
-                    "array literal items must be literal values",
-                    Some("array expressions will come with helper functions".to_string()),
-                ));
-            };
-            values.push(value);
+            values.push(self.parse_or()?);
 
             if self.match_token(TokenKind::Comma) {
                 if self.match_token(TokenKind::RBracket) {
@@ -795,11 +806,7 @@ impl ExprParser {
             break;
         }
 
-        let element_type = infer_array_element_type(&values);
-        Ok(Expr::Literal(Value::Array {
-            element_type,
-            values,
-        }))
+        Ok(Expr::Array(values))
     }
 
     fn match_token(&mut self, kind: TokenKind) -> bool {
@@ -846,7 +853,7 @@ impl ExprParser {
     }
 }
 
-fn infer_array_element_type(values: &[Value]) -> String {
+pub fn infer_array_element_type(values: &[Value]) -> String {
     let Some(first) = values.first() else {
         return "unknown".to_string();
     };
@@ -908,5 +915,32 @@ fn binary_op(kind: TokenKind) -> BinaryOp {
         TokenKind::Plus => BinaryOp::Add,
         TokenKind::Minus => BinaryOp::Sub,
         _ => unreachable!("not a binary operator"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_array_with_expressions() {
+        let expr = parse("[input.email, input.name, passwordHash]", 1, 1).expect("parse");
+        let Expr::Array(elements) = expr else {
+            panic!("expected array expression");
+        };
+        assert_eq!(elements.len(), 3);
+    }
+
+    #[test]
+    fn evaluates_crypto_verify_in_condition() {
+        let hash_expr = parse("crypto.hashPassword(\"secret\")", 1, 1).expect("parse");
+        let Value::String(hash) = evaluate(&hash_expr, &Env::new(), 1, 1).expect("hash") else {
+            panic!("expected string hash");
+        };
+
+        let condition =
+            parse(&format!("!crypto.verifyPassword(\"secret\", \"{hash}\")"), 1, 1).expect("parse");
+        let value = evaluate(&condition, &Env::new(), 1, 1).expect("verify");
+        assert_eq!(value, Value::Bool(false));
     }
 }

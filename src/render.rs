@@ -87,6 +87,14 @@ pub fn file_has_defer(file: &WebFile) -> bool {
     nodes_have_defer(&file.template)
 }
 
+pub fn page_uses_defer(
+    file: &WebFile,
+    layouts: &LayoutRegistry,
+    default_layout: Option<&str>,
+) -> bool {
+    file_has_defer(file) || layout_has_defer(layouts, default_layout, file)
+}
+
 pub fn render_with_components(
     file: &WebFile,
     params: &Scope,
@@ -281,7 +289,7 @@ pub async fn render_page_streaming(
         let layout_scope = layout_scope_for(layout_file, file.layout_use.as_ref(), &scope)?;
         let mut layout_island = None;
         let mut forward_state = None;
-        let mut html = render_nodes(
+        let html = render_nodes(
             &layout_file.template,
             &layout_scope,
             components,
@@ -321,42 +329,11 @@ pub async fn render_deferred_block(
     let mut island = None;
     let mut forward_state = None;
     let shadowed = BTreeSet::new();
-    let mut nested_defer = None;
-
-    let render_body = async {
-        let body_html = render_nodes(
-            &block.body,
-            &scope,
-            components,
-            runtime,
-            &mut context,
-            &mut island,
-            None,
-            &mut forward_state,
-            &shadowed,
-            &mut nested_defer,
-        )?;
-        if let Some(mut nested) = nested_defer {
-            let mut html = body_html;
-            for nested_block in std::mem::take(&mut nested.blocks) {
-                let fragment =
-                    Box::pin(render_deferred_block(&nested_block, file, components, runtime))
-                        .await?;
-                html = replace_defer_wrapper(&html, &nested_block.id, &fragment)
-                    .ok_or_else(|| defer_wrapper_not_found(&nested_block.id))?;
-                context.islands.extend(fragment.islands);
-                context
-                    .global_styles
-                    .extend(fragment.global_styles.clone());
-                for (key, value) in fragment.scoped_styles {
-                    context.scoped_styles.insert(key, value);
-                }
-            }
-            Ok(html)
-        } else {
-            Ok(body_html)
-        }
-    };
+    let mut nested_defer = Some(DeferCollectState {
+        scope_id: format!("{}-nested", block.id),
+        next_id: 0,
+        blocks: Vec::new(),
+    });
 
     let body_html = match runtime
         .execute_block_async(&block.prelude, &mut scope, &mut session)
@@ -364,7 +341,38 @@ pub async fn render_deferred_block(
     {
         Ok(_) => {
             scope.insert("session".to_string(), Value::Object(session));
-            render_body.await?
+            let body_html = render_nodes(
+                &block.body,
+                &scope,
+                components,
+                runtime,
+                &mut context,
+                &mut island,
+                None,
+                &mut forward_state,
+                &shadowed,
+                &mut nested_defer,
+            )?;
+            if let Some(mut nested) = nested_defer.take() {
+                let mut html = body_html;
+                for nested_block in std::mem::take(&mut nested.blocks) {
+                    let fragment =
+                        Box::pin(render_deferred_block(&nested_block, file, components, runtime))
+                            .await?;
+                    html = replace_defer_wrapper(&html, &nested_block.id, &fragment)
+                        .ok_or_else(|| defer_wrapper_not_found(&nested_block.id))?;
+                    context.islands.extend(fragment.islands);
+                    context
+                        .global_styles
+                        .extend(fragment.global_styles.clone());
+                    for (key, value) in fragment.scoped_styles {
+                        context.scoped_styles.insert(key, value);
+                    }
+                }
+                html
+            } else {
+                body_html
+            }
         }
         Err(error) => {
             if let Some(error_name) = &block.error_name {
@@ -683,6 +691,10 @@ fn layout_scope_for(
         }
     }
 
+    if let Some(session) = page_scope.get("session") {
+        scope.insert("session".to_string(), merge_session_defaults(session));
+    }
+
     Ok(scope)
 }
 
@@ -864,6 +876,7 @@ fn default_session_value() -> Value {
     let mut fields = BTreeMap::new();
     fields.insert("count".to_string(), Value::Int(0));
     fields.insert("name".to_string(), Value::String(String::new()));
+    fields.insert("userId".to_string(), Value::Int(0));
     Value::Object(fields)
 }
 
@@ -1023,6 +1036,7 @@ fn render_nodes(
                         slot_content,
                         forward_state,
                         shadowed_props,
+                        defer_state,
                     )?);
                     html.push_str("</div>");
 
@@ -1041,6 +1055,7 @@ fn render_nodes(
                             slot_content,
                             forward_state,
                             shadowed_props,
+                            defer_state,
                         )?);
                         html.push_str("</div>");
                     }
@@ -1063,6 +1078,7 @@ fn render_nodes(
                         slot_content,
                         forward_state,
                         shadowed_props,
+                        defer_state,
                     )?);
                 } else {
                     html.push_str(&render_nodes(
@@ -1075,6 +1091,7 @@ fn render_nodes(
                         slot_content,
                         forward_state,
                         shadowed_props,
+                        defer_state,
                     )?);
                 }
             }
@@ -1102,6 +1119,7 @@ fn render_nodes(
                     slot_content,
                     forward_state,
                     shadowed_props,
+                    defer_state,
                 )?);
             }
             TemplateNode::For {
@@ -1127,6 +1145,7 @@ fn render_nodes(
                         slot_content,
                         forward_state,
                         shadowed_props,
+                        defer_state,
                     )?);
                 }
             }
@@ -1146,15 +1165,18 @@ fn render_nodes(
                 error_body,
                 line,
             } => {
-                let Some(state) = defer_state else {
-                    return Err(Diagnostic::error(
-                        Span::at(*line, 1),
-                        "@defer requires async streaming render",
-                        None,
-                    ));
+                let id = {
+                    let Some(state) = defer_state else {
+                        return Err(Diagnostic::error(
+                            Span::at(*line, 1),
+                            "@defer requires async streaming render",
+                            None,
+                        ));
+                    };
+                    let id = format!("defer-{}-{}", state.scope_id, state.next_id);
+                    state.next_id += 1;
+                    id
                 };
-                let id = format!("defer-{}-{}", state.scope_id, state.next_id);
-                state.next_id += 1;
                 let placeholder_html = render_nodes(
                     placeholder,
                     &scope,
@@ -1172,7 +1194,7 @@ fn render_nodes(
                 ));
                 html.push_str(&placeholder_html);
                 html.push_str(&format!("<!--/ws-defer:{id}--></div>"));
-                state.blocks.push(DeferredBlock {
+                defer_state.as_mut().expect("defer state").blocks.push(DeferredBlock {
                     id,
                     prelude: prelude.clone(),
                     body: body.clone(),
@@ -1560,6 +1582,7 @@ fn render_component(
         value_signal,
         applied: false,
     });
+    let mut defer_state = None;
     let mut html = render_nodes(
         &component.template,
         &component_scope,
@@ -1570,6 +1593,7 @@ fn render_component(
         None,
         &mut forward_state,
         &shadowed,
+        &mut defer_state,
     )?;
     if let Some(forward) = &mut forward_state {
         if !forward.applied && has_forward {
@@ -1678,6 +1702,7 @@ fn render_client_component(
     let mut island_ref = Some(&mut island_state);
     let mut forward_state = None;
     let shadowed = BTreeSet::new();
+    let mut defer_state = None;
     let inner = render_nodes(
         &component.template,
         &render_scope,
@@ -1688,6 +1713,7 @@ fn render_client_component(
         None,
         &mut forward_state,
         &shadowed,
+        &mut defer_state,
     )?;
 
     let inner = index_event_attributes(&inner, &manifest.event_handlers);
@@ -1926,6 +1952,58 @@ fn validate_nodes(
                     diagnostics.push(error);
                 }
             }
+            TemplateNode::Defer {
+                prelude,
+                body,
+                placeholder,
+                error_name,
+                error_body,
+                line,
+            } => {
+                if placeholder.is_empty() {
+                    diagnostics.push(Diagnostic::error(
+                        Span::at(*line, 1),
+                        "@defer requires a non-empty @placeholder block",
+                        None,
+                    ));
+                }
+                validate_server_block_statements(prelude, diagnostics);
+                let defer_scope = preview_defer_prelude_scope(prelude, &scope, models);
+                validate_nodes(
+                    body,
+                    &defer_scope,
+                    components,
+                    allow_slot,
+                    client_ctx,
+                    models,
+                    diagnostics,
+                );
+                validate_nodes(
+                    placeholder,
+                    &scope,
+                    components,
+                    allow_slot,
+                    client_ctx,
+                    models,
+                    diagnostics,
+                );
+                if let Some(error_name) = error_name {
+                    let mut error_scope = scope.clone();
+                    error_scope.insert(
+                        error_name.clone(),
+                        stmt::error_value("preview".to_string()),
+                    );
+                    validate_nodes(
+                        error_body,
+                        &error_scope,
+                        components,
+                        allow_slot,
+                        client_ctx,
+                        models,
+                        diagnostics,
+                    );
+                }
+            }
         }
     }
 }
@@ -2136,6 +2214,74 @@ fn array_loop_sample(
         .first()
         .cloned()
         .or_else(|| Some(sample_for_element_type(element_type, models)))
+}
+
+fn preview_defer_prelude_scope(
+    statements: &[Statement],
+    scope: &Scope,
+    models: &BTreeMap<String, crate::db::ModelDecl>,
+) -> Scope {
+    let mut scope = scope.clone();
+    let session = match scope.get("session") {
+        Some(Value::Object(session)) => session.clone(),
+        _ => BTreeMap::new(),
+    };
+    let _ = stmt::register_fn_defs(statements, &mut scope);
+    for statement in statements {
+        match statement {
+            Statement::Let {
+                name,
+                type_name,
+                value,
+                line,
+                column,
+            } => {
+                let preview = if expr_contains_await(value) {
+                    type_name
+                        .as_deref()
+                        .map(sample_for_type)
+                        .unwrap_or_else(|| Value::Int(0))
+                } else if let Ok(value) = expr::evaluate(value, &scope, *line, *column) {
+                    value
+                } else {
+                    type_name
+                        .as_deref()
+                        .map(sample_for_type)
+                        .unwrap_or_else(|| Value::Int(0))
+                };
+                scope.insert(name.clone(), preview);
+            }
+            Statement::Assign {
+                target: stmt::AssignTarget::Name(name),
+                value,
+                line,
+                column,
+            } if !expr_contains_await(value) => {
+                if let Ok(value) = expr::evaluate(value, &scope, *line, *column) {
+                    scope.insert(name.clone(), value);
+                }
+            }
+            _ => {}
+        }
+    }
+    scope.insert("session".to_string(), Value::Object(session));
+    let _ = models;
+    scope
+}
+
+fn expr_contains_await(expression: &expr::Expr) -> bool {
+    match expression {
+        expr::Expr::Await { .. } => true,
+        expr::Expr::Unary { expr, .. } => expr_contains_await(expr),
+        expr::Expr::Binary { left, right, .. } => {
+            expr_contains_await(left) || expr_contains_await(right)
+        }
+        expr::Expr::Call { callee, args, .. } => {
+            expr_contains_await(callee) || args.iter().any(expr_contains_await)
+        }
+        expr::Expr::Literal(_) | expr::Expr::Path(_) => false,
+        expr::Expr::Array(elements) => elements.iter().any(expr_contains_await),
+    }
 }
 
 fn sample_for_type(type_name: &str) -> Value {
@@ -2741,5 +2887,55 @@ mod tests {
         assert!(output.scoped_styles.contains_key("Counter"));
         assert!(output.scoped_styles.contains_key("UI.Button"));
         assert_eq!(output.html.matches(r#"data-ws-style="Counter""#).count(), 2);
+    }
+
+    #[tokio::test]
+    async fn streaming_shell_emits_defer_placeholder_without_body() {
+        let page = parse(
+            "@page \"/\"\n\n@defer {\n  value: int = 0\n  <p>{value}</p>\n} @placeholder {\n  <p>Loading...</p>\n}",
+        )
+        .expect("page");
+        let runtime = WebRuntime::new();
+        let streaming = super::render_page_streaming(
+            &page,
+            &Scope::new(),
+            &ComponentRegistry::new(),
+            &LayoutRegistry::new(),
+            None,
+            &runtime,
+        )
+        .await
+        .expect("streaming render");
+
+        assert_eq!(streaming.deferred.len(), 1);
+        assert!(streaming.shell.html.contains("data-web-defer-state=\"pending\""));
+        assert!(streaming.shell.html.contains("Loading..."));
+        assert!(!streaming.shell.html.contains("{value}"));
+    }
+
+    #[tokio::test]
+    async fn render_deferred_block_resolves_prelude_and_body() {
+        let page = parse(
+            "@page \"/\"\n\n@defer {\n  value: int = 0\n  _: object = await sleep(1ms)\n  value = 7\n  <p>Done {value}</p>\n} @placeholder {\n  <p>Loading...</p>\n}",
+        )
+        .expect("page");
+        let runtime = WebRuntime::new();
+        let streaming = super::render_page_streaming(
+            &page,
+            &Scope::new(),
+            &ComponentRegistry::new(),
+            &LayoutRegistry::new(),
+            None,
+            &runtime,
+        )
+        .await
+        .expect("streaming render");
+        let block = &streaming.deferred[0];
+
+        let fragment = super::render_deferred_block(block, &page, &ComponentRegistry::new(), &runtime)
+            .await
+            .expect("deferred block");
+
+        assert!(fragment.html.contains("Done 7"));
     }
 }

@@ -8,4 +8,13 @@ CREATE TABLE "Todo" (
   "createdAt" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE "User" (
+  "id" INTEGER PRIMARY KEY AUTOINCREMENT,
+  "email" TEXT UNIQUE NOT NULL,
+  "name" TEXT NOT NULL,
+  "passwordHash" TEXT NOT NULL,
+  "createdAt" TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS "idx_Todo_done_createdAt" ON "Todo" ("done", "createdAt");
+CREATE INDEX IF NOT EXISTS "idx_User_email" ON "User" ("email");

@@ -1,0 +1,29 @@
+@page "/defer-demo"
+
+@load {
+  title: string = "Defer streaming demo"
+}
+
+<main>
+  <h1>{title}</h1>
+  <p class="shell-note">This line renders immediately with the page shell.</p>
+
+  @defer {
+  delayMs: int = 0
+  _: object = await sleep(300ms)
+  delayMs = 300
+
+  <section class="defer-result">
+    <h2>Deferred stats</h2>
+    <p>Loaded after {delayMs}ms delay.</p>
+  </section>
+  } @placeholder {
+  <section class="defer-placeholder">
+    <p>Loading stats...</p>
+  </section>
+  } @error err {
+  <section class="defer-error">
+    <p>Could not load stats: {err.message}</p>
+  </section>
+  }
+</main>

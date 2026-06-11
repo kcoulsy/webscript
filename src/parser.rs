@@ -499,7 +499,8 @@ fn parse_nodes(
                 || trimmed.starts_with("} @else")
                 || trimmed.starts_with("} @case")
                 || trimmed == "} @default {"
-                || trimmed == "} @placeholder {")
+                || trimmed == "} @placeholder {"
+                || trimmed.starts_with("} @error "))
         {
             break;
         }
@@ -1520,6 +1521,30 @@ fn is_block_close(trimmed: &str) -> bool {
         || trimmed.starts_with("} @else")
         || trimmed == "} @placeholder {"
         || trimmed.starts_with("} @error ")
+}
+
+fn defer_body_contains_markup(nodes: &[TemplateNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        TemplateNode::Text(text) => text.contains('<') || text.contains('{'),
+        TemplateNode::Component(_) | TemplateNode::Expr(_) | TemplateNode::Slot => true,
+        TemplateNode::If {
+            then_nodes,
+            else_nodes,
+            ..
+        } => defer_body_contains_markup(then_nodes) || defer_body_contains_markup(else_nodes),
+        TemplateNode::Switch {
+            cases,
+            default_nodes,
+            ..
+        } => {
+            cases.iter().any(|case| defer_body_contains_markup(&case.nodes))
+                || defer_body_contains_markup(default_nodes)
+        }
+        TemplateNode::For { body, .. } => defer_body_contains_markup(body),
+        TemplateNode::Do { statements, .. } => !statements.is_empty(),
+        TemplateNode::Defer { body, .. } => defer_body_contains_markup(body),
+        TemplateNode::EventBinding(_) => true,
+    })
 }
 
 fn is_defer_statement_line(trimmed: &str) -> bool {
@@ -2802,8 +2827,15 @@ mod tests {
             panic!("expected defer node");
         };
         assert!(prelude.is_empty());
-        assert!(body.iter().any(|node| matches!(node, TemplateNode::Text(t) if t.contains("SlowPanel"))));
-        assert!(placeholder.iter().any(|node| matches!(node, TemplateNode::Text(t) if t.contains("Skeleton"))));
+        assert!(super::defer_body_contains_markup(body));
+        assert!(body.iter().any(|node| matches!(
+            node,
+            TemplateNode::Component(call) if call.name == "SlowPanel"
+        )));
+        assert!(placeholder.iter().any(|node| matches!(
+            node,
+            TemplateNode::Component(call) if call.name == "Skeleton"
+        )));
         assert!(error_name.is_none());
         assert!(error_body.is_empty());
     }

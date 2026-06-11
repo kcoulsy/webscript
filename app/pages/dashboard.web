@@ -1,0 +1,39 @@
+@page "/dashboard"
+
+@load {
+  loggedIn: bool = session.userId != 0
+  userName: string = ""
+  userEmail: string = ""
+  memberSince: string = ""
+
+  if session.userId != 0 {
+    user: User = await User.find(session.userId)
+    if user.id != 0 {
+      userName = user.name
+      userEmail = user.email
+      memberSince = user.createdAt
+    }
+  }
+}
+
+@action logout {
+  session.userId = 0
+  redirect("/login")
+}
+
+<main>
+  <h1>Dashboard</h1>
+
+  @if !loggedIn || userName == "" {
+    <p>You need to sign in to view this page.</p>
+    <p><a href="/login">Log in</a> or <a href="/register">create an account</a>.</p>
+  } @else {
+    <p>Signed in as <strong>{userName}</strong> ({userEmail})</p>
+    <p>Member since {memberSince}</p>
+
+    <form method="post" action="/dashboard" class="button-row">
+      <input type="hidden" name="_action" value="logout" />
+      <UI.Button label="Log out" type="submit" variant="outline" />
+    </form>
+  }
+</main>

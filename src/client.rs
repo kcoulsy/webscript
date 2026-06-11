@@ -80,6 +80,39 @@ pub struct HandlerCompileContext<'a> {
 
 pub fn client_runtime_script() -> &'static str {
     r#"window.WebScript = window.WebScript || {};
+WebScript.defer = {
+  init() {},
+  replace(id, html) {
+    const el = document.querySelector(`[data-web-defer="${id}"]`);
+    if (!el) return;
+    const template = document.createElement("template");
+    template.innerHTML = html;
+    const replacement = template.content.firstElementChild;
+    if (replacement) {
+      el.replaceWith(replacement);
+      WebScript.defer.hydrateIslands(replacement);
+      return;
+    }
+    el.outerHTML = html;
+    WebScript.defer.hydrateIslands(document);
+  },
+  hydrateIslands(root) {
+    const scope = root instanceof Element ? root : document;
+    const islands = scope.querySelectorAll("[data-ws-island]");
+    for (const island of islands) {
+      if (island.dataset.wsHydrated === "1") continue;
+      island.dataset.wsHydrated = "1";
+      const script = island.nextElementSibling;
+      if (script && script.tagName === "SCRIPT" && !script.src) {
+        try {
+          (0, eval)(script.textContent);
+        } catch (error) {
+          console.error("WebScript island hydration failed", error);
+        }
+      }
+    }
+  },
+};
 WebScript.signal = (initial) => {
   let value = initial;
   const listeners = new Set();
@@ -394,6 +427,14 @@ pub fn render_island_script(manifest: &IslandManifest) -> String {
 
 fn js_string_literal(value: &str) -> String {
     format!("\"{}\"", escape_js_string(value))
+}
+
+pub fn format_defer_chunk_script(id: &str, html: &str) -> String {
+    format!(
+        "<script data-web-defer-chunk>WebScript.defer.replace({}, {})</script>",
+        js_string_literal(id),
+        js_string_literal(html)
+    )
 }
 
 pub fn inject_client_scripts(html: &str, scripts: &str) -> String {

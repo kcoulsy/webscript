@@ -1,0 +1,8 @@
+@model User {
+  id: int @primary @auto
+  email: string @unique
+  name: string
+  passwordHash: string
+  createdAt: datetime @default(now)
+  @index(email)
+}

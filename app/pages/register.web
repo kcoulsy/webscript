@@ -1,0 +1,46 @@
+@page "/register"
+
+@load {
+  loggedIn: bool = session.userId != 0
+}
+
+@action register(input: RegisterForm) {
+  existing: User = await User.findByEmail(input.email)
+
+  if existing.id != 0 {
+    fail("An account with that email already exists")
+  }
+
+  passwordHash: string = crypto.hashPassword(input.password)
+
+  _: object = await db.execute("INSERT INTO User (email, name, passwordHash) VALUES (?, ?, ?)", [input.email, input.name, passwordHash])
+
+  user: User = await User.findByEmail(input.email)
+  session.userId = user.id
+  redirect("/dashboard")
+}
+
+<main>
+  <h1>Create account</h1>
+
+  @if loggedIn {
+    <p>You are already signed in. <a href="/dashboard">Go to dashboard</a></p>
+  } @else {
+    <p>Register to get started.</p>
+
+    <form method="post" action="/register" class="form-stack">
+      <input type="hidden" name="_action" value="register" />
+      <UI.Label text="Name" target="register-name" />
+      <UI.Input id="register-name" name="name" required=true />
+      <UI.Label text="Email" target="register-email" />
+      <UI.Input id="register-email" name="email" type="email" required=true />
+      <UI.Label text="Password" target="register-password" />
+      <UI.Input id="register-password" name="password" type="password" required=true />
+      <UI.Button label="Create account" type="submit" />
+    </form>
+
+    <p>
+      Already have an account? <a href="/login">Log in</a>
+    </p>
+  }
+</main>

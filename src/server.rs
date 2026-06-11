@@ -278,6 +278,57 @@ fn handle_connection(
     render_params.insert("session".to_string(), crate::parser::Value::Object(session));
     let task_trace = Arc::new(Mutex::new(TaskTrace::new()));
     let request_runtime = web_runtime.for_request(Arc::clone(&task_trace));
+    let uses_defer =
+        render::page_uses_defer(&parsed, &layouts, default_layout.as_deref());
+    if uses_defer {
+        let streaming_result = runtime_handle.block_on(render::render_page_streaming(
+            &parsed,
+            &render_params,
+            &components,
+            &layouts,
+            default_layout.as_deref(),
+            &request_runtime,
+        ));
+        match streaming_result {
+            Ok(streaming) => {
+                metrics.push("Render", render_started.elapsed(), None);
+                if let Ok(trace) = task_trace.lock() {
+                    metrics.tasks = trace.spans().to_vec();
+                    metrics.queries = trace.queries().to_vec();
+                }
+                metrics.set_total(started.elapsed());
+                if let Err(error) = write_streaming_defer_response(
+                    &mut stream,
+                    root,
+                    &parsed,
+                    &components,
+                    &request_runtime,
+                    &streaming,
+                    &session_id,
+                    is_new_session,
+                    &metrics,
+                    &runtime_handle,
+                ) {
+                    return Err(io_diagnostic(error));
+                }
+                return Ok(());
+            }
+            Err(error) => {
+                metrics.push("Render", render_started.elapsed(), None);
+                if let Ok(trace) = task_trace.lock() {
+                    metrics.tasks = trace.spans().to_vec();
+                    metrics.queries = trace.queries().to_vec();
+                }
+                metrics.set_total(started.elapsed());
+                return respond_diagnostic(
+                    &mut stream,
+                    FileDiagnostic::new(route_file, source, error),
+                    Some(metrics),
+                );
+            }
+        }
+    }
+
     let render_result = runtime_handle.block_on(render::render_page_async(
         &parsed,
         &render_params,
@@ -294,20 +345,7 @@ fn handle_connection(
                 metrics.queries = trace.queries().to_vec();
             }
             metrics.set_total(started.elapsed());
-            let style_fragment =
-                crate::style::render_style_tags(&output.global_styles, &output.scoped_styles);
-            let html = if tailwind::enabled(root) {
-                crate::style::inject_head_fragment(&output.html, tailwind::STYLESHEET_LINK)
-            } else {
-                output.html.clone()
-            };
-            let html = crate::style::inject_styles(&html, &style_fragment);
-            let client_scripts = output
-                .islands
-                .iter()
-                .map(render_island_script)
-                .collect::<String>();
-            let html = client::inject_client_scripts(&html, &client_scripts);
+            let html = finalize_page_html(root, &output, false);
             write_response_with_headers(
                 &mut stream,
                 200,
@@ -574,6 +612,7 @@ fn load_session(
         "name".to_string(),
         crate::parser::Value::String(String::new()),
     );
+    session.insert("userId".to_string(), crate::parser::Value::Int(0));
     sessions.insert(session_id.clone(), session.clone());
     Ok((session_id, session, true))
 }
@@ -650,6 +689,125 @@ fn public_asset(root: &Path, request_path: &str) -> Result<Option<String>, Strin
     } else {
         Ok(None)
     }
+}
+
+fn finalize_page_html(root: &Path, output: &render::RenderOutput, defer_bootstrap: bool) -> String {
+    let style_fragment =
+        crate::style::render_style_tags(&output.global_styles, &output.scoped_styles);
+    let html = if tailwind::enabled(root) {
+        crate::style::inject_head_fragment(&output.html, tailwind::STYLESHEET_LINK)
+    } else {
+        output.html.clone()
+    };
+    let html = crate::style::inject_styles(&html, &style_fragment);
+    let client_scripts = output
+        .islands
+        .iter()
+        .map(render_island_script)
+        .collect::<String>();
+    let mut html = client::inject_client_scripts(&html, &client_scripts);
+    if defer_bootstrap {
+        html = inject_defer_bootstrap(&html);
+    }
+    html
+}
+
+fn inject_defer_bootstrap(html: &str) -> String {
+    let bootstrap = "<script>WebScript.defer.init()</script>";
+    if let Some(index) = html.rfind("</body>") {
+        let mut injected = String::with_capacity(html.len() + bootstrap.len());
+        injected.push_str(&html[..index]);
+        injected.push_str(bootstrap);
+        injected.push_str(&html[index..]);
+        injected
+    } else {
+        let mut injected = String::with_capacity(html.len() + bootstrap.len());
+        injected.push_str(html);
+        injected.push_str(bootstrap);
+        injected
+    }
+}
+
+fn write_streaming_defer_response(
+    stream: &mut TcpStream,
+    root: &Path,
+    file: &crate::parser::WebFile,
+    components: &render::ComponentRegistry,
+    runtime: &WebRuntime,
+    streaming: &render::StreamingRenderOutput,
+    session_id: &str,
+    is_new_session: bool,
+    metrics: &RequestMetrics,
+    runtime_handle: &Handle,
+) -> Result<(), String> {
+    let shell_html = finalize_page_html(root, &streaming.shell, true);
+    let shell_html = dev::DevServer::inject_dev_tools(&shell_html, Some(metrics));
+    begin_chunked_response(
+        stream,
+        200,
+        "text/html; charset=utf-8",
+        &session_headers(session_id, is_new_session),
+    )?;
+    write_chunk(stream, &shell_html)?;
+
+    for block in &streaming.deferred {
+        let fragment = runtime_handle
+            .block_on(render::render_deferred_block(
+                block, file, components, runtime,
+            ))
+            .map_err(|error| error.message)?;
+        let chunk = render::format_defer_stream_chunk(&block.id, &fragment);
+        if write_chunk(stream, &chunk).is_err() {
+            break;
+        }
+    }
+
+    finish_chunked_response(stream)
+}
+
+fn begin_chunked_response(
+    stream: &mut TcpStream,
+    status: u16,
+    content_type: &str,
+    headers: &[(&'static str, String)],
+) -> Result<(), String> {
+    let reason = match status {
+        200 => "OK",
+        _ => "OK",
+    };
+    let mut response = format!(
+        "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nTransfer-Encoding: chunked\r\nConnection: close\r\n"
+    );
+    for (name, value) in headers {
+        response.push_str(name);
+        response.push_str(": ");
+        response.push_str(value);
+        response.push_str("\r\n");
+    }
+    response.push_str("\r\n");
+    stream
+        .write_all(response.as_bytes())
+        .map_err(|error| error.to_string())
+}
+
+fn write_chunk(stream: &mut TcpStream, body: &str) -> Result<(), String> {
+    let bytes = body.as_bytes();
+    let header = format!("{:x}\r\n", bytes.len());
+    stream
+        .write_all(header.as_bytes())
+        .map_err(|error| error.to_string())?;
+    stream
+        .write_all(bytes)
+        .map_err(|error| error.to_string())?;
+    stream
+        .write_all(b"\r\n")
+        .map_err(|error| error.to_string())
+}
+
+fn finish_chunked_response(stream: &mut TcpStream) -> Result<(), String> {
+    stream
+        .write_all(b"0\r\n\r\n")
+        .map_err(|error| error.to_string())
 }
 
 fn write_response(

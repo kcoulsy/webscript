@@ -1,3 +1,4 @@
+use crate::crypto_runtime;
 use crate::db_runtime::DbRuntime;
 use crate::debugbar::{QuerySource, TaskKind, TaskTrace};
 use crate::diagnostic::{Diagnostic, Span};
@@ -377,6 +378,22 @@ impl WebRuntime {
                     self.evaluate_call(callee, args, scope, session, line, column)
                         .await
                 }
+                expr::Expr::Array(elements) => {
+                    let mut values = Vec::with_capacity(elements.len());
+                    for element in elements {
+                        values.push(
+                            Box::pin(self.evaluate_expr_inner(
+                                element, scope, session, line, column,
+                            ))
+                            .await?,
+                        );
+                    }
+                    let element_type = expr::infer_array_element_type(&values);
+                    Ok(Value::Array {
+                        element_type,
+                        values,
+                    })
+                }
                 other => expr::evaluate(other, scope, line, column).map_err(EvalError::Diagnostic),
             }
         })
@@ -463,6 +480,10 @@ impl WebRuntime {
                 })
                 .await;
             return Ok(Value::Promise { id });
+        }
+
+        if let Some(method) = crypto_callee_name(callee) {
+            return crypto_runtime::call(&method, &evaluated_args, line, column).map_err(Into::into);
         }
 
         if let Some((model, method)) = model_callee_name(callee) {
@@ -949,6 +970,13 @@ fn db_callee_name(expr: &expr::Expr) -> Option<String> {
     }
 }
 
+fn crypto_callee_name(expr: &expr::Expr) -> Option<String> {
+    match expr {
+        expr::Expr::Path(path) => crypto_runtime::method_name(path),
+        _ => None,
+    }
+}
+
 fn db_task_label(method: &str, args: &[Value]) -> String {
     let sql = args
         .first()
@@ -1014,7 +1042,9 @@ fn schema_ref_name(expr: &expr::Expr) -> Option<&str> {
 
 fn model_callee_name(expr: &expr::Expr) -> Option<(String, String)> {
     match expr {
-        expr::Expr::Path(path) if path.len() == 2 && path[0] != "db" => {
+        expr::Expr::Path(path)
+            if path.len() == 2 && path[0] != "db" && path[0] != "crypto" =>
+        {
             Some((path[0].clone(), path[1].clone()))
         }
         _ => None,
@@ -1117,6 +1147,41 @@ mod tests {
     use super::*;
     use crate::expr;
     use std::sync::{Arc, Mutex};
+
+    #[tokio::test]
+    async fn crypto_hash_and_verify() {
+        let runtime = WebRuntime::new();
+        let scope = Env::new();
+        let session = BTreeMap::new();
+
+        let hash_expr = expr::parse("crypto.hashPassword(\"secret\")", 1, 1).expect("parse");
+        let hash_value = runtime
+            .evaluate_expr(&hash_expr, &scope, &session, 1, 1)
+            .await
+            .expect("hash");
+        let Value::String(hash) = hash_value else {
+            panic!("expected string hash");
+        };
+        assert!(hash.starts_with("$argon2id$"));
+
+        let verify_expr =
+            expr::parse(&format!("crypto.verifyPassword(\"secret\", \"{hash}\")"), 1, 1)
+                .expect("parse");
+        let verify_value = runtime
+            .evaluate_expr(&verify_expr, &scope, &session, 1, 1)
+            .await
+            .expect("verify");
+        assert_eq!(verify_value, Value::Bool(true));
+
+        let bad_expr =
+            expr::parse(&format!("crypto.verifyPassword(\"wrong\", \"{hash}\")"), 1, 1)
+                .expect("parse");
+        let bad_value = runtime
+            .evaluate_expr(&bad_expr, &scope, &session, 1, 1)
+            .await
+            .expect("verify wrong");
+        assert_eq!(bad_value, Value::Bool(false));
+    }
 
     #[tokio::test]
     async fn sleep_resolves() {

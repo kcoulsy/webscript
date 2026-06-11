@@ -1,0 +1,5 @@
+@schema RegisterForm {
+  name: string @min(1)
+  email: string @min(1)
+  password: string @min(8)
+}

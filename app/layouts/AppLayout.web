@@ -11,6 +11,16 @@
     <a href="/async-demo">Async demo</a>
     <a href="/fetch-demo">Fetch demo</a>
     <a href="/posts/intro">Posts</a>
+    @if session.userId != 0 {
+      <a href="/dashboard">Dashboard</a>
+      <form method="post" action="/dashboard" class="nav-logout">
+        <input type="hidden" name="_action" value="logout" />
+        <button type="submit" class="nav-logout-button">Log out</button>
+      </form>
+    } @else {
+      <a href="/login">Login</a>
+      <a href="/register">Register</a>
+    }
   </nav>
 </header>
 
@@ -73,6 +83,27 @@
   }
 
   .app-layout a:hover {
+    color: var(--ui-primary);
+  }
+
+  .nav-logout {
+    display: inline;
+    margin: 0;
+  }
+
+  .nav-logout-button {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--ui-foreground);
+    text-decoration: none;
+    font-size: 0.875rem;
+    font-weight: 500;
+    font-family: inherit;
+    cursor: pointer;
+  }
+
+  .nav-logout-button:hover {
     color: var(--ui-primary);
   }
 
