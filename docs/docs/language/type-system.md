@@ -19,6 +19,10 @@ duration
 bytes
 ```
 
+:::warning[Not Yet Implemented]
+The `date`, `datetime`, and `bytes` primitive types are documented but not yet implemented in the current MVP runtime. Only `string`, `int`, `float`, `bool`, and `duration` are currently supported.
+:::
+
 ## String Literal Types
 
 Use string literal types to restrict a value to one allowed string, or a small inline union of strings:
@@ -56,6 +60,10 @@ posts: Post[]
 
 ## Promises
 
+:::warning[Not Yet Implemented]
+The `Promise<T>` type annotation is documented but not yet available in the current MVP runtime.
+:::
+
 ```web
 ordersPromise: Promise<Order[]> = db.orders.recent(limit)
 ```
@@ -90,7 +98,15 @@ type RegisterInput {
 }
 ```
 
+:::warning[Not Yet Implemented]
+Validation annotations on input types (`@email`, `@min`, `@max`) inside `type` declarations are documented but not yet implemented. Use `@schema` files for runtime validation instead.
+:::
+
 ## Response Types
+
+:::warning[Not Yet Implemented]
+Response types (`Json<T>`, `Redirect`, `Html`, `Response`) in action and API declarations are documented but not yet implemented in the current MVP runtime.
+:::
 
 ```web
 Json<Post[]>
@@ -123,6 +139,10 @@ Props can also use string literal unions:
 ```
 
 ## Session Types
+
+:::warning[Not Yet Implemented]
+Typed `@session` declarations are documented but not yet implemented. The current MVP uses a basic in-memory session with string keys. See [Auth and Sessions](../guides/auth-and-sessions) for current limitations.
+:::
 
 ```web
 @session {
@@ -161,6 +181,10 @@ Use inference for:
 
 ## Custom Scalar Types
 
+:::warning[Not Yet Implemented]
+Custom scalar types are documented but not yet implemented in the current MVP runtime.
+:::
+
 Custom scalar types can parse route params and input fields:
 
 ```web
@@ -175,6 +199,10 @@ Route usage:
 ```
 
 ## Type Errors
+
+:::warning[Not Yet Implemented]
+Full type-checking (missing props, wrong types, nullable access, server/client boundary enforcement) is documented but not yet enforced in the current MVP runtime.
+:::
 
 The compiler should catch:
 

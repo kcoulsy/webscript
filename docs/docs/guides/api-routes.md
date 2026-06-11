@@ -1,5 +1,18 @@
 # API Routes
 
+:::warning[Not Yet Implemented]
+API routes (`@api`) and related features documented on this page are not yet implemented in the current MVP runtime. This includes:
+- `@api METHOD "/path"` route declarations
+- `@query` for typed query parameters
+- `@body` for request body parsing
+- `@require auth` guards
+- JSON response helpers (`ok()`, `created()`, `json()`, `notFound()`, etc.)
+- Chainable response modifiers (`.header()`, `.cookie()`, etc.)
+- `slug()` string helper
+
+Use `@page` routes with `@load` and `@action` for the current MVP.
+:::
+
 API routes are declared with `@api` and are response-first. They usually return JSON.
 
 ## Basic API Route

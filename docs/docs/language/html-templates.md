@@ -58,6 +58,10 @@ They can also be expressions:
 
 Recommended object form:
 
+:::warning[Not Yet Implemented]
+The object class syntax `class={{ "card": true, "active": isActive }}` is documented but not yet implemented in the current MVP runtime.
+:::
+
 ```web
 <div class={{
   "card": true
@@ -121,6 +125,10 @@ Loops:
 
 ## Raw HTML
 
+:::warning[Not Yet Implemented]
+`html.trusted()` is documented but not yet implemented in the current MVP runtime.
+:::
+
 Raw HTML should require an explicit trusted wrapper:
 
 ```web
@@ -155,7 +163,11 @@ Default slot:
 <slot />
 ```
 
-Named slot:
+## Named Slot
+
+:::warning[Not Yet Implemented]
+Named slots (`<slot name="..." />`) and `<template slot="...">` consumers are documented but not yet implemented in the current MVP runtime. Only default `<slot />` is currently supported.
+:::
 
 ```web
 <slot name="actions" />

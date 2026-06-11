@@ -114,6 +114,10 @@ For slow sections of a page, `@defer` sends a placeholder first and streams repl
 }
 ```
 
+:::tip
+`@defer` with `@placeholder` is available in the current MVP. `@await` / `@loading` / `@error` is documented but not yet implemented.
+:::
+
 See [Async Rendering](../guides/async-rendering) when you need streamed partial updates.
 
 Next: wrap up and explore the rest of the docs.

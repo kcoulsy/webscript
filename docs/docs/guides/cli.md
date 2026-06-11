@@ -112,6 +112,10 @@ migration file changes later, migration stops with a checksum error.
 
 ## `web snapshot`
 
+:::warning[Not Yet Implemented]
+`web snapshot` is documented but not yet implemented in the current MVP runtime.
+:::
+
 Create an optional precompiled snapshot:
 
 ```bash
@@ -129,6 +133,10 @@ Snapshot output may include:
 Snapshot builds are never required for normal development.
 
 ## `web deploy`
+
+:::warning[Not Yet Implemented]
+`web deploy` is documented but not yet implemented in the current MVP runtime.
+:::
 
 Deploy using the configured adapter:
 
@@ -153,6 +161,10 @@ or:
 ```
 
 ## `web doctor`
+
+:::warning[Not Yet Implemented]
+`web doctor` is documented but not yet implemented in the current MVP runtime.
+:::
 
 Inspect local environment and project health:
 

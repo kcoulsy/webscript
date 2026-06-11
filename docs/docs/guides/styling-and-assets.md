@@ -68,6 +68,10 @@ Assets in `public` should be served without transformation.
 
 ## Asset Helper
 
+:::warning[Not Yet Implemented]
+The `asset()` helper is documented but not yet implemented in the current MVP runtime. Use direct path references like `/images/logo.png` instead.
+:::
+
 For hashed or deployed assets:
 
 ```web

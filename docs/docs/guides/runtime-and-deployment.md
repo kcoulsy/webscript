@@ -64,6 +64,10 @@ This keeps deployment simple: ship source files and the runtime.
 
 ## Snapshot Mode
 
+:::warning[Not Yet Implemented]
+Snapshot mode (`@deploy { mode: "snapshot" }`) and the `web snapshot` command are documented but not yet implemented. The current MVP only supports runtime mode.
+:::
+
 Optional precompilation:
 
 ```web
@@ -84,6 +88,10 @@ Snapshot mode must remain optional.
 
 ## Serverless
 
+:::warning[Not Yet Implemented]
+Serverless deployment adapters are documented but not yet implemented in the current MVP runtime.
+:::
+
 Serverless deployments should support:
 
 - Runtime file loading.
@@ -95,6 +103,10 @@ Serverless deployments should support:
 Stateful sessions should store only a signed opaque session ID in the cookie.
 
 ## Edge
+
+:::warning[Not Yet Implemented]
+Edge deployment and stateless token mode are documented but not yet implemented in the current MVP runtime.
+:::
 
 Edge deployments may prefer stateless tokens:
 

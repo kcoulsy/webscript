@@ -164,6 +164,14 @@ pub enum TemplateNode {
         statements: Vec<Statement>,
         line: usize,
     },
+    Defer {
+        prelude: Vec<Statement>,
+        body: Vec<TemplateNode>,
+        placeholder: Vec<TemplateNode>,
+        error_name: Option<String>,
+        error_body: Vec<TemplateNode>,
+        line: usize,
+    },
     EventBinding(EventBinding),
     Slot,
 }
@@ -490,9 +498,18 @@ fn parse_nodes(
             && (trimmed == "}"
                 || trimmed.starts_with("} @else")
                 || trimmed.starts_with("} @case")
-                || trimmed == "} @default {")
+                || trimmed == "} @default {"
+                || trimmed == "} @placeholder {")
         {
             break;
+        }
+
+        if trimmed == "@defer {" {
+            nodes.push(parse_defer(lines, cursor, lets)?);
+            if *cursor < lines.len() && !is_block_close(lines[*cursor].trim()) {
+                nodes.push(TemplateNode::Text("\n".to_string()));
+            }
+            continue;
         }
 
         if trimmed.starts_with("@if ") {
@@ -1499,7 +1516,157 @@ fn parse_prop_literal(value: &str) -> Option<Value> {
 }
 
 fn is_block_close(trimmed: &str) -> bool {
-    trimmed == "}" || trimmed.starts_with("} @else")
+    trimmed == "}"
+        || trimmed.starts_with("} @else")
+        || trimmed == "} @placeholder {"
+        || trimmed.starts_with("} @error ")
+}
+
+fn is_defer_statement_line(trimmed: &str) -> bool {
+    if trimmed.is_empty() || trimmed == "} @placeholder {" {
+        return false;
+    }
+    trimmed.starts_with("fn ")
+        || trimmed.starts_with("if ")
+        || trimmed.starts_with("while ")
+        || trimmed == "try {"
+        || trimmed.starts_with("return")
+        || trimmed.starts_with("throw(")
+        || trimmed.starts_with("throw (")
+        || trimmed.starts_with("fail(")
+        || trimmed.starts_with("redirect(")
+        || trimmed.starts_with("session.")
+        || trimmed.contains(":=")
+        || (trimmed.contains('=')
+            && !trimmed.starts_with('<')
+            && !trimmed.starts_with('@')
+            && !trimmed.starts_with('{'))
+}
+
+fn parse_defer_body(
+    lines: &[&str],
+    cursor: &mut usize,
+    block_line: usize,
+    lets: &mut Vec<LetDecl>,
+) -> Result<(Vec<Statement>, Vec<TemplateNode>), Diagnostic> {
+    let mut prelude = Vec::new();
+    let mut body = Vec::new();
+    let mut template_mode = false;
+
+    while *cursor < lines.len() {
+        let trimmed = lines[*cursor].trim();
+        if trimmed == "} @placeholder {" {
+            break;
+        }
+
+        if !template_mode && is_defer_statement_line(trimmed) {
+            prelude.push(stmt::parse_one_statement(
+                lines,
+                cursor,
+                stmt::BlockMode::AsyncCapable,
+            )?);
+            continue;
+        }
+
+        template_mode = true;
+        body = parse_nodes(lines, cursor, true, lets)?;
+        break;
+    }
+
+    if *cursor >= lines.len() || lines[*cursor].trim() != "} @placeholder {" {
+        return Err(parse_diagnostic_line(
+            block_line,
+            "@defer expects `} @placeholder {` after the deferred body",
+        ));
+    }
+    *cursor += 1;
+    Ok((prelude, body))
+}
+
+fn parse_defer(
+    lines: &[&str],
+    cursor: &mut usize,
+    lets: &mut Vec<LetDecl>,
+) -> Result<TemplateNode, Diagnostic> {
+    let line_number = *cursor + 1;
+    let trimmed = lines[*cursor].trim();
+    if trimmed != "@defer {" {
+        return Err(parse_diagnostic_line(line_number, "@defer expects `@defer {`"));
+    }
+    *cursor += 1;
+
+    let (prelude, body) = parse_defer_body(lines, cursor, line_number, lets)?;
+    let placeholder = parse_nodes(lines, cursor, true, lets)?;
+
+    if *cursor >= lines.len() {
+        return Err(parse_diagnostic_line(line_number, "unclosed @placeholder block"));
+    }
+
+    let close_line = lines[*cursor].trim();
+    let mut error_name = None;
+    let mut error_body = Vec::new();
+
+    if close_line == "}" {
+        *cursor += 1;
+        if *cursor < lines.len() {
+            let next = lines[*cursor].trim();
+            if let Some(name) = next.strip_prefix("@error ") {
+                let rest = name.trim().strip_suffix('{').ok_or_else(|| {
+                    parse_diagnostic_line(*cursor + 1, "@error expects `@error name {`")
+                })?;
+                let name = rest.trim();
+                if !is_identifier(name) {
+                    return Err(parse_diagnostic_line(
+                        *cursor + 1,
+                        format!("invalid @error binding `{name}`"),
+                    ));
+                }
+                error_name = Some(name.to_string());
+                *cursor += 1;
+                error_body = parse_nodes(lines, cursor, true, lets)?;
+                if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
+                    return Err(parse_diagnostic_line(*cursor + 1, "unclosed @error block"));
+                }
+                *cursor += 1;
+            }
+        }
+    } else if let Some(rest) = close_line.strip_prefix("} @error ") {
+        let name_part = rest.trim().strip_suffix('{').ok_or_else(|| {
+            parse_diagnostic_line(*cursor + 1, "@error expects `} @error name {`")
+        })?;
+        let name = name_part.trim();
+        if !is_identifier(name) {
+            return Err(parse_diagnostic_line(
+                *cursor + 1,
+                format!("invalid @error binding `{name}`"),
+            ));
+        }
+        error_name = Some(name.to_string());
+        *cursor += 1;
+        error_body = parse_nodes(lines, cursor, true, lets)?;
+        if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
+            return Err(parse_diagnostic_line(*cursor + 1, "unclosed @error block"));
+        }
+        *cursor += 1;
+    } else {
+        return Err(parse_diagnostic_line(*cursor + 1, "expected `}`"));
+    }
+
+    if placeholder.is_empty() {
+        return Err(parse_diagnostic_line(
+            line_number,
+            "@defer requires a non-empty @placeholder block",
+        ));
+    }
+
+    Ok(TemplateNode::Defer {
+        prelude,
+        body,
+        placeholder,
+        error_name,
+        error_body,
+        line: line_number,
+    })
 }
 
 fn parse_for(
@@ -2614,6 +2781,57 @@ mod tests {
 
         assert_eq!(error.message, "unexpected directive `@wat`");
         assert_eq!(error.span.line, 3);
+    }
+
+    #[test]
+    fn parses_defer_with_placeholder() {
+        let parsed = parse(
+            "@page \"/\"\n\n@defer {\n  <SlowPanel />\n} @placeholder {\n  <Skeleton />\n}",
+        )
+        .expect("valid defer");
+
+        let TemplateNode::Defer {
+            prelude,
+            body,
+            placeholder,
+            error_name,
+            error_body,
+            ..
+        } = &parsed.template[0]
+        else {
+            panic!("expected defer node");
+        };
+        assert!(prelude.is_empty());
+        assert!(body.iter().any(|node| matches!(node, TemplateNode::Text(t) if t.contains("SlowPanel"))));
+        assert!(placeholder.iter().any(|node| matches!(node, TemplateNode::Text(t) if t.contains("Skeleton"))));
+        assert!(error_name.is_none());
+        assert!(error_body.is_empty());
+    }
+
+    #[test]
+    fn parses_defer_with_prelude_and_error() {
+        let parsed = parse(
+            "@page \"/\"\n\n@defer {\n  count: int = 0\n  <p>{count}</p>\n} @placeholder {\n  <p>Loading...</p>\n} @error err {\n  <p>{err.message}</p>\n}",
+        )
+        .expect("valid defer with prelude");
+
+        let TemplateNode::Defer {
+            prelude,
+            error_name,
+            ..
+        } = &parsed.template[0]
+        else {
+            panic!("expected defer node");
+        };
+        assert_eq!(prelude.len(), 1);
+        assert_eq!(error_name.as_deref(), Some("err"));
+    }
+
+    #[test]
+    fn rejects_defer_without_placeholder() {
+        let error = parse("@page \"/\"\n\n@defer {\n  <p>Hi</p>\n}")
+            .expect_err("defer without placeholder should fail");
+        assert!(error.message.contains("@placeholder"));
     }
 
     #[test]

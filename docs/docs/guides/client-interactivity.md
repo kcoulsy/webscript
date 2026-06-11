@@ -171,6 +171,10 @@ Use actions or API routes for client-to-server mutations:
 
 ## Enhanced Forms
 
+:::warning[Not Yet Implemented]
+Enhanced form features (`form.pending`, `form.errors.fieldName`, `<form @submit={actionName}>` binding, and progressive enhancement without page reload) are documented but not yet implemented in the current MVP runtime. Forms currently use the standard HTML POST with `_action` field pattern.
+:::
+
 Forms work without JavaScript and can be enhanced by the runtime:
 
 ```web

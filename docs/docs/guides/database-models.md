@@ -93,6 +93,14 @@ be awaited in `@load` or `@action` blocks:
 
 Supported methods today: `all`, `find`, `create`, `update`, `deleteAll`.
 
+:::warning[Not Yet Implemented]
+The following model helpers are documented but not yet implemented in the current MVP runtime:
+- `Model.findByEmail(...)` and other `findBy*` methods
+- `Model.count()` (partially available)
+- `Model.where({...})` (partially available)
+- `db.transaction { ... }` — not yet available
+:::
+
 ## Raw SQL
 
 Use `db.query` and `db.execute` when you need plain SQL instead of model

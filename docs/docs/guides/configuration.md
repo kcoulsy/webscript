@@ -1,5 +1,17 @@
 # Configuration
 
+:::warning[Not Yet Implemented]
+Several configuration features documented on this page are not yet implemented in the current MVP runtime:
+- `@auth { mode, store, cookie, ... }` configuration — not yet available
+- `@session { store, ttl, data { ... } }` — not yet available (MVP uses in-memory sessions)
+- `@headers global { ... }` — not yet available
+- `@features { streaming, clientRuntime, scopedCss }` — not yet available
+- `@cache { ... }` — not yet available
+- `env("VAR")` — not yet available
+- Deployment adapters (node, serverless, edge, cloudflare, vercel, deno) — not yet available
+- Snapshot mode — not yet available
+:::
+
 WebScript configuration can live in `web.config` and route/component files through top-level directives. Runtime defaults should be secure and useful without large configuration files.
 
 ## `web.config`

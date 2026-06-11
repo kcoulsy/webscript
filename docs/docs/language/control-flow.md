@@ -42,6 +42,10 @@ The loop variable is scoped to the loop body.
 
 ## Indexes
 
+:::warning[Not Yet Implemented]
+The `@for item, index in items` syntax with an index variable is documented but not yet implemented in the current MVP runtime.
+:::
+
 ```web
 @for user, index in users {
   <p>{index + 1}. {user.name}</p>
@@ -51,6 +55,10 @@ The loop variable is scoped to the loop body.
 Indexes are zero-based.
 
 ## Empty State
+
+:::warning[Not Yet Implemented]
+The `@empty` branch on `@for` loops is documented but not yet implemented in the current MVP runtime.
+:::
 
 Recommended syntax:
 

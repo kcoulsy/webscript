@@ -1,5 +1,16 @@
 # Forms And Validation
 
+:::warning[Not Yet Implemented]
+Several form and validation features documented on this page are not yet implemented in the current MVP runtime:
+- `<form @submit={actionName}>` binding — use the standard `<form method="post">` with `<input type="hidden" name="_action" value="actionName" />` pattern instead
+- `@body input: TypeName` — not yet available
+- `@csrf` — not yet available
+- `form.errors.fieldName` — not yet available
+- `form.pending` — not yet available
+- File uploads (`File` type, `@maxSize`, `@mime`) — not yet available
+- Validation annotations on input types (`@email`, `@min`, `@max`) — use `@schema` for runtime validation instead
+:::
+
 WebScript treats forms as server-native. Forms submit to actions, inputs are parsed into typed values, validation failures are structured, and CSRF protection is handled by the runtime.
 
 ## Basic Form

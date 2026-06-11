@@ -1,5 +1,17 @@
 # Security
 
+:::warning[Not Yet Implemented]
+Several security features documented on this page are not yet implemented in the current MVP runtime:
+- `html.trusted()` for raw HTML — not yet available
+- `__Host_` cookie prefix — not yet enforced
+- CSRF token generation, verification, and rotation — not yet available
+- Session rotation on login/logout — not yet available
+- `@require auth` / `@require role(...)` route guards — not yet available
+- Secure default response headers (`X-Frame-Options`, etc.) via `@headers` — not yet available
+- `env("VAR")` for environment variables — not yet available
+- `rateLimit()` — not yet available
+:::
+
 WebScript security should be default-on. Common web security features belong in the runtime, not in application boilerplate.
 
 ## HTML Escaping
@@ -124,14 +136,14 @@ Only serializable, non-sensitive data should be passed into client islands.
 
 ## Passwords
 
-Use runtime password helpers:
+Use runtime crypto helpers:
 
 ```web
-password.hash(input.password)
-password.verify(input.password, user.passwordHash)
+crypto.hashPassword(input.password)
+crypto.verifyPassword(input.password, user.passwordHash)
 ```
 
-The helper should use a modern password hashing algorithm such as Argon2id or bcrypt with safe defaults.
+`crypto.hashPassword` uses Argon2id with safe defaults and returns a PHC-encoded hash string.
 
 ## Rate Limiting
 

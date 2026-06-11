@@ -1,5 +1,9 @@
 # Auth And Sessions
 
+:::warning[Not Yet Implemented]
+Most auth and session features documented on this page are not yet implemented in the current MVP runtime. The current MVP only supports a basic in-memory session with a `webscript_session` cookie. Typed `@session` declarations, `@auth` configuration, `@require auth`/`@guest` guards, `auth.login()`/`auth.logout()`, session rotation, CSRF, and session stores (KV, D1, Postgres, Redis) are not yet available.
+:::
+
 Auth is a native request feature in WebScript. It is configured once, loaded for every request, and exposed as typed context.
 
 ## Auth Configuration
@@ -142,7 +146,7 @@ Permission-style guard:
 @action login(input: LoginForm) -> Redirect {
   user: User? = await User.findByEmail(input.email)
 
-  if user == null || !password.verify(input.password, user.passwordHash) {
+  if user == null || !crypto.verifyPassword(input.password, user.passwordHash) {
     fail("Invalid email or password")
   }
 

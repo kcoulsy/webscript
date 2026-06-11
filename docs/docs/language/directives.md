@@ -19,6 +19,10 @@ Declares an HTML page route.
 
 ### `@api`
 
+:::warning[Not Yet Implemented]
+`@api` routes are documented but not yet implemented in the current MVP runtime. Only `@page` routes are currently available.
+:::
+
 Declares an API route.
 
 ```web
@@ -37,6 +41,10 @@ Defines or applies a layout.
 
 ### `@query`
 
+:::warning[Not Yet Implemented]
+`@query` is documented but not yet implemented in the current MVP runtime.
+:::
+
 Parses query parameters.
 
 ```web
@@ -46,6 +54,10 @@ Parses query parameters.
 ```
 
 ### `@body`
+
+:::warning[Not Yet Implemented]
+`@body` is documented but not yet implemented in the current MVP runtime.
+:::
 
 Parses request body data.
 
@@ -119,6 +131,10 @@ Loops over arrays.
 
 ### `@await`
 
+:::warning[Not Yet Implemented]
+`@await` / `@loading` / `@error` is documented but not yet implemented. Use `@defer` with `@placeholder` for async streaming in the current MVP.
+:::
+
 Renders async data with optional loading and error states.
 
 ```web
@@ -132,6 +148,10 @@ Renders async data with optional loading and error states.
 ```
 
 ### `@async`
+
+:::warning[Not Yet Implemented]
+`@async` with `@then` / `@loading` / `@error` is documented but not yet implemented. Use `@defer` for async streaming in the current MVP.
+:::
 
 Verbose async state block.
 
@@ -156,6 +176,10 @@ Streams a lazy section.
 ```
 
 ## Auth Directives
+
+:::warning[Not Yet Implemented]
+The auth directives (`@auth`, `@require`, `@guest`, `@session`) are documented but not yet implemented in the current MVP runtime. The MVP supports a basic in-memory session via the `webscript_session` cookie. See [Auth and Sessions](../guides/auth-and-sessions) for the current MVP limitations.
+:::
 
 ### `@auth`
 
@@ -201,6 +225,10 @@ Defines session store and typed session data.
 ## Response Directives
 
 ### `@headers`
+
+:::warning[Not Yet Implemented]
+`@headers` is documented but not yet implemented in the current MVP runtime.
+:::
 
 Sets response headers.
 
@@ -255,6 +283,10 @@ Configures deployment mode or adapter.
 ```
 
 ### `@features`
+
+:::warning[Not Yet Implemented]
+`@features` is documented but not yet implemented in the current MVP runtime.
+:::
 
 Enables runtime features.
 

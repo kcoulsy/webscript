@@ -58,6 +58,10 @@ Visit `/`.
 
 ## Add An API Route
 
+:::warning[Not Yet Implemented]
+`@api` routes and `@query` are documented but not yet implemented in the current MVP runtime. Use `@page` routes with `@load` instead.
+:::
+
 ```web
 @api GET "/api/posts" -> Json<Post[]>
 
@@ -84,7 +88,7 @@ API routes return JSON by default, but explicit response types are recommended f
 @action login(input: LoginForm) -> Redirect {
   user: User? = await User.findByEmail(input.email)
 
-  if user == null || !password.verify(input.password, user.passwordHash) {
+  if user == null || !crypto.verifyPassword(input.password, user.passwordHash) {
     fail("Invalid email or password")
   }
 
@@ -104,6 +108,10 @@ Actions run on the server. They can return redirects, JSON, HTML, or error respo
 
 ## Protect A Page
 
+:::warning[Not Yet Implemented]
+`@auth required` and typed auth context are documented but not yet implemented in the current MVP runtime.
+:::
+
 ```web
 @page "/dashboard"
 
@@ -117,6 +125,10 @@ Actions run on the server. They can return redirects, JSON, HTML, or error respo
 The runtime reads the session cookie, verifies it, loads session data, and exposes typed `auth`.
 
 ## Add Async HTML
+
+:::warning[Not Yet Implemented]
+`@await` / `@loading` / `@error` is documented but not yet implemented. Use `@defer` with `@placeholder` for async streaming instead.
+:::
 
 ```web
 @await db.users.recent() as users {

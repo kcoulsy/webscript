@@ -6,6 +6,29 @@ sidebar_position: 1
 
 This page lists common helpers expected from the WebScript runtime.
 
+:::warning[Not Yet Implemented]
+Most helpers documented on this page are not yet implemented in the current MVP runtime. The currently available helpers are limited to:
+- `crypto.hashPassword(value)` and `crypto.verifyPassword(value, hash)` (Argon2id)
+- `await fetch(url, Schema)` (HTTP GET)
+- `await sleep(duration)`, `spawn(promise)`, `timeout(duration, promise)`
+- `fail("message")` and `redirect("/path")` in actions
+- Basic `session` access in actions and templates
+- Debug bar at `/.web/debug`
+
+The following are documented but not yet available:
+- Response helpers (`response()`, `html()`, `json()`, `ok()`, `created()`, `noContent()`, `badRequest()`, `unauthorized()`, `forbidden()`, `notFound()`, `conflict()`, `unprocessable()`, `serverError()`, `redirect(path, status)`)
+- Response modifiers (`.status()`, `.header()`, `.cookie()`, `.signedCookie()`, `.forgetCookie()`)
+- Auth helpers (`auth.check`, `auth.user`, `auth.userId`, `auth.roles`, `auth.session`, `auth.login()`, `auth.logout()`)
+- Guard helpers (`role()`, `anyRole()`, `can()`, `require()`)
+- Request helpers (`request.header()`, `request.cookie()`, `request.accepts()`, `request.ip`, `request.userAgent`)
+- String/HTML helpers (`slug()`, `escape()`, `html.trusted()`, `asset()`, `formatDate()`)
+- Logging helpers (`log.debug()`, `log.info()`, `log.warn()`, `log.error()`)
+- Rate limiting (`rateLimit()`)
+- Storage helpers (`kv()`, `storage.put()`, `storage.get()`)
+- Database helpers (`db.transaction { ... }`, `Model.findByEmail()`)
+- Environment (`env()`)
+:::
+
 ## Response Helpers
 
 ```web
@@ -66,11 +89,11 @@ request.ip
 request.userAgent
 ```
 
-## Password Helpers
+## Crypto Helpers
 
 ```web
-password.hash(value)
-password.verify(value, hash)
+crypto.hashPassword(value)
+crypto.verifyPassword(value, hash)
 ```
 
 ## String Helpers

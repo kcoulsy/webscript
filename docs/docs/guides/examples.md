@@ -4,6 +4,10 @@ This page collects complete examples that combine multiple WebScript features.
 
 ## Dashboard With Deferred Stats
 
+:::warning[Not Yet Implemented]
+This example uses `@auth required { redirect }`, `auth.user`, and `@load` with `auth` context — these auth features are documented but not yet implemented in the current MVP runtime.
+:::
+
 ```web
 @page "/dashboard"
 
@@ -38,6 +42,10 @@ This page collects complete examples that combine multiple WebScript features.
 
 ## Login And Logout
 
+:::warning[Not Yet Implemented]
+This example uses `@guest`, `@action` with typed inputs, `crypto.verifyPassword`, `auth.login()`, and `auth.logout()` — these auth features are documented but not yet implemented in the current MVP runtime.
+:::
+
 ```web
 @page "/login"
 
@@ -48,7 +56,7 @@ This page collects complete examples that combine multiple WebScript features.
 @action login(input: LoginForm) -> Redirect {
   user: User? = await User.findByEmail(input.email)
 
-  if user == null || !password.verify(input.password, user.passwordHash) {
+  if user == null || !crypto.verifyPassword(input.password, user.passwordHash) {
     fail("Invalid email or password")
   }
 
@@ -76,6 +84,10 @@ This page collects complete examples that combine multiple WebScript features.
 ```
 
 ## Recent Orders Section
+
+:::warning[Not Yet Implemented]
+This example uses `@await` / `@loading` / `@error` — documented but not yet implemented. Use `@defer` with `@placeholder` instead.
+:::
 
 ```web
 <section>
@@ -130,6 +142,10 @@ This page collects complete examples that combine multiple WebScript features.
 
 ## Create Post API
 
+:::warning[Not Yet Implemented]
+This example uses `@api`, `@require auth`, `@body`, `created()`, `.header()`, and `.cookie()` — documented but not yet implemented in the current MVP runtime.
+:::
+
 ```web
 @api POST "/api/posts" -> Json<Post>
 
@@ -157,6 +173,10 @@ This page collects complete examples that combine multiple WebScript features.
 ```
 
 ## Preview Page With No-Store Header
+
+:::warning[Not Yet Implemented]
+This example uses `@headers` and `html.trusted()` — documented but not yet implemented in the current MVP runtime.
+:::
 
 ```web
 @page "/preview/{token:string}"
@@ -194,6 +214,10 @@ This page collects complete examples that combine multiple WebScript features.
 ```
 
 ## Auth And Session Configuration
+
+:::warning[Not Yet Implemented]
+`@auth` and `@session` configuration blocks with typed session data are documented but not yet implemented. The current MVP uses a simple in-memory session. See [Auth and Sessions](./auth-and-sessions) for details.
+:::
 
 ```web
 @auth {

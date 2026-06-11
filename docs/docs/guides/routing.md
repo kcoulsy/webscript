@@ -2,6 +2,16 @@
 
 WebScript supports explicit route declarations for pages and API endpoints.
 
+:::warning[Not Yet Implemented]
+Several routing features are documented but not yet implemented in the current MVP runtime:
+- `@api` routes (only `@page` routes are available)
+- `@query` for typed query parameters
+- Route guards (`@require auth`, `@require role(...)`, `@require anyRole(...)`, `@require can(...)`)
+- `@auth required { redirect }` and `@guest { redirect }`
+- `@headers` for response headers
+- Custom scalar types in route params (e.g., `{id:UserId}`)
+:::
+
 ## Pages
 
 Pages render HTML by default:

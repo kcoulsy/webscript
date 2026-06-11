@@ -46,7 +46,22 @@ WebScript keeps common web concepts native:
 - Auth is configured with `@auth` and enforced with `@require`.
 - Responses are values such as `json(...)`, `redirect(...)`, and `notFound(...)`.
 
+:::warning[Not Yet Implemented]
+Several core concepts listed above are documented but not yet implemented in the current MVP runtime:
+- `@api` routes — use `@page` routes with `@load` instead
+- `@await` / `@loading` / `@error` — use `@defer` with `@placeholder` instead
+- `@auth` / `@require` / `@guest` — not yet available
+- Response helpers (`json()`, `notFound()`, etc.) — not yet available
+- `@query`, `@body`, `@headers` — not yet available
+
+See the individual guide pages for detailed implementation status.
+:::
+
 ## Example Page
+
+:::warning[Not Yet Implemented]
+This example uses `@auth required`, `auth.user`, and typed auth context — these auth features are documented but not yet implemented in the current MVP runtime.
+:::
 
 ```web
 @page "/dashboard"
@@ -94,6 +109,10 @@ For each request:
 WebScript does compile internally, but compilation is lazy and runtime-owned. The developer does not need to run a build command before serving, testing, or deploying.
 
 Optional snapshot builds can exist for performance:
+
+:::warning[Not Yet Implemented]
+Snapshot mode (`@deploy { mode: "snapshot" }`) and `web snapshot` are documented but not yet implemented. Only runtime mode is currently available.
+:::
 
 ```web
 @deploy {

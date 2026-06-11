@@ -251,3 +251,15 @@ Common directives:
 @style
 @deploy
 ```
+
+:::warning[Not Yet Implemented]
+The following directives are documented but not yet implemented in the current MVP runtime:
+- `@api` — use `@page` routes with `@load` instead
+- `@query` — not yet available
+- `@body` — not yet available
+- `@headers` — not yet available
+- `@require` / `@auth` / `@guest` — not yet available
+- `@session` typed session data — not yet available
+- `@await` / `@loading` / `@then` — use `@defer` with `@placeholder` instead
+- `@props` — not yet available (component props are declared in `@component` instead)
+:::

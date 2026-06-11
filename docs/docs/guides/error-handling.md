@@ -1,5 +1,14 @@
 # Error Handling
 
+:::warning[Not Yet Implemented]
+Several error handling features documented on this page are not yet implemented in the current MVP runtime:
+- Response helpers (`notFound()`, `forbidden()`, `badRequest()`, `unprocessable()`, `serverError()`)
+- Structured field-level `fail({ field: "message" })` — only `fail("message")` is currently available
+- `@error err { }` error boundaries on pages and components
+- Custom error pages (`@page error 404`, `@page error 500`, `app/pages/errors/*.web`)
+- `log.debug/info/warn/error` logging helpers
+:::
+
 WebScript distinguishes expected application failures from unexpected runtime errors.
 
 ## Expected Failures

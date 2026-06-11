@@ -4,6 +4,10 @@ WebScript makes async blocks first-class inside HTML. This lets a page render us
 
 ## `@await`
 
+:::warning[Not Yet Implemented]
+`@await` / `@loading` / `@error` is documented but not yet implemented in the current MVP runtime. Use `@defer` with `@placeholder` for streamed async sections instead.
+:::
+
 Use `@await` when markup depends on a promise:
 
 ```web
@@ -23,6 +27,10 @@ The `@await` block has three states:
 - `@error`: renders if the promise rejects.
 
 ## Typed Async Declaration
+
+:::warning[Not Yet Implemented]
+`@async` with `@loading` / `@error` / `@then` is documented but not yet implemented in the current MVP runtime. Use `@defer` for async streaming instead.
+:::
 
 Use `@async` when you want to name and type the async value explicitly:
 

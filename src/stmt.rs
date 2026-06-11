@@ -105,6 +105,24 @@ pub enum BlockOutcome {
     Redirect(String),
 }
 
+pub fn parse_one_statement(
+    lines: &[&str],
+    cursor: &mut usize,
+    mode: BlockMode,
+) -> Result<Statement, Diagnostic> {
+    let line_number = *cursor + 1;
+    let raw_line = lines[*cursor];
+    let trimmed = raw_line.trim();
+    parse_statement(
+        lines,
+        cursor,
+        raw_line,
+        trimmed,
+        line_number,
+        mode,
+    )
+}
+
 pub fn parse_server_block(
     lines: &[&str],
     cursor: &mut usize,

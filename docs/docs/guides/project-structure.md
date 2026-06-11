@@ -47,6 +47,10 @@ Pages can include `@load`, `@action`, guards, headers, async blocks, components,
 
 ## `app/api`
 
+:::warning[Not Yet Implemented]
+API route files (`@api`) are documented but not yet implemented in the current MVP runtime. Use `@page` routes with `@load` instead.
+:::
+
 API files define JSON-oriented routes.
 
 ```web

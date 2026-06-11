@@ -118,6 +118,10 @@ Consumer:
 
 ## Named Slots
 
+:::warning[Not Yet Implemented]
+Named slots (`<slot name="..." />`) and `<template slot="...">` consumers are documented but not yet implemented in the current MVP runtime. Only default `<slot />` is currently available.
+:::
+
 ```web
 @component Toolbar {}
 

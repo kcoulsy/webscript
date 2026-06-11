@@ -132,6 +132,10 @@ The dev runtime stores sessions in memory and sends a `webscript_session` HttpOn
 
 ## Action Inputs
 
+:::warning[Not Yet Implemented]
+Typed action inputs (`@action login(input: LoginForm) -> Redirect`) and `@body` are documented but not yet implemented in the current MVP runtime. The current MVP exposes form fields as strings on `input`.
+:::
+
 Inputs should be typed:
 
 ```web
@@ -158,6 +162,10 @@ if user == null {
 ```
 
 Structured failures:
+
+:::warning[Not Yet Implemented]
+The structured `fail({ field: "message" })` syntax for field-level errors is documented but not yet implemented. Only `fail("message")` with a string argument is currently available.
+:::
 
 ```web
 fail({
@@ -212,6 +220,10 @@ Prefer route-level guards when the whole page or API requires auth:
 
 ## Transactions
 
+:::warning[Not Yet Implemented]
+`db.transaction { ... }` is documented but not yet implemented in the current MVP runtime.
+:::
+
 The runtime should provide a transaction helper:
 
 ```web
@@ -228,6 +240,10 @@ The runtime should provide a transaction helper:
 ```
 
 ## Idempotency
+
+:::warning[Not Yet Implemented]
+`@idempotent` is documented but not yet implemented in the current MVP runtime.
+:::
 
 For payments, webhooks, and retryable forms, actions should support idempotency keys:
 

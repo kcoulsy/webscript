@@ -71,6 +71,10 @@ Server blocks support `fn`, `while`, and `try/catch`:
 
 ## Typed form input
 
+:::warning[Not Yet Implemented]
+`@body input: TypeName` and typed action inputs (e.g., `@action login(input: LoginForm) -> Redirect`) with `auth.login()` are documented but not yet implemented in the current MVP runtime. See [Forms and Validation](../guides/forms-and-validation) for the current MVP form pattern.
+:::
+
 For structured forms, declare `@body`:
 
 ```web

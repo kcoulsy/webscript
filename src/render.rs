@@ -28,6 +28,29 @@ pub struct RenderOutput {
     pub scoped_styles: BTreeMap<String, String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct DeferredBlock {
+    pub id: String,
+    pub prelude: Vec<Statement>,
+    pub body: Vec<TemplateNode>,
+    pub error_name: Option<String>,
+    pub error_body: Vec<TemplateNode>,
+    pub scope: Scope,
+    pub line: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct StreamingRenderOutput {
+    pub shell: RenderOutput,
+    pub deferred: Vec<DeferredBlock>,
+}
+
+struct DeferCollectState {
+    scope_id: String,
+    next_id: usize,
+    blocks: Vec<DeferredBlock>,
+}
+
 #[derive(Default)]
 struct RenderContext {
     islands: Vec<IslandManifest>,
@@ -60,6 +83,10 @@ struct ForwardContext {
     applied: bool,
 }
 
+pub fn file_has_defer(file: &WebFile) -> bool {
+    nodes_have_defer(&file.template)
+}
+
 pub fn render_with_components(
     file: &WebFile,
     params: &Scope,
@@ -73,12 +100,20 @@ pub fn render_with_components(
             None,
         ));
     }
+    if file_has_defer(file) {
+        return Err(Diagnostic::error(
+            Span::at(1, 1),
+            "@defer requires async rendering",
+            None,
+        ));
+    }
     let mut scope = base_scope_for(file, params);
     evaluate_lets(&file.lets, &mut scope)?;
     let mut context = RenderContext::default();
     let mut island = None;
     let mut forward_state = None;
     let shadowed = BTreeSet::new();
+    let mut defer_state = None;
     let html = render_nodes(
         &file.template,
         &scope,
@@ -89,6 +124,7 @@ pub fn render_with_components(
         None,
         &mut forward_state,
         &shadowed,
+        &mut defer_state,
     )?;
     let scope_id = scope_id_for_file(file);
     let html = apply_file_styles(file, &scope_id, &mut context, html);
@@ -120,11 +156,21 @@ pub async fn render_page_async(
     default_layout: Option<&str>,
     runtime: &WebRuntime,
 ) -> Result<RenderOutput, Diagnostic> {
+    if file_has_defer(file)
+        || layout_has_defer(layouts, default_layout, file)
+    {
+        let streaming =
+            render_page_streaming(file, params, components, layouts, default_layout, runtime)
+                .await?;
+        return assemble_buffered_streaming(streaming, file, components, runtime).await;
+    }
+
     let scope = scope_for_async(file, params, runtime).await?;
     let mut context = page_render_context(file);
     let mut island = None;
     let mut forward_state = None;
     let shadowed = BTreeSet::new();
+    let mut defer_state = None;
     let page_html = render_nodes(
         &file.template,
         &scope,
@@ -135,6 +181,7 @@ pub async fn render_page_async(
         None,
         &mut forward_state,
         &shadowed,
+        &mut defer_state,
     )?;
 
     let layout_name = match &file.layout_use {
@@ -162,6 +209,7 @@ pub async fn render_page_async(
     let mut layout_island = None;
     let mut forward_state = None;
     let shadowed = BTreeSet::new();
+    let mut defer_state = None;
     let mut html = render_nodes(
         &layout_file.template,
         &layout_scope,
@@ -172,12 +220,281 @@ pub async fn render_page_async(
         Some(&page_html),
         &mut forward_state,
         &shadowed,
+        &mut defer_state,
     )?;
 
     let layout_scope_id = scope_id_for_file(layout_file);
     html = apply_file_styles(layout_file, &layout_scope_id, &mut context, html);
 
     Ok(render_output(html, &context))
+}
+
+pub async fn render_page_streaming(
+    file: &WebFile,
+    params: &Scope,
+    components: &ComponentRegistry,
+    layouts: &LayoutRegistry,
+    default_layout: Option<&str>,
+    runtime: &WebRuntime,
+) -> Result<StreamingRenderOutput, Diagnostic> {
+    let scope = scope_for_async(file, params, runtime).await?;
+    let mut context = page_render_context(file);
+    let mut island = None;
+    let mut forward_state = None;
+    let shadowed = BTreeSet::new();
+    let scope_id = scope_id_for_file(file);
+    let mut defer_state = Some(DeferCollectState {
+        scope_id: scope_id.clone(),
+        next_id: 0,
+        blocks: Vec::new(),
+    });
+    let page_html = render_nodes(
+        &file.template,
+        &scope,
+        components,
+        runtime,
+        &mut context,
+        &mut island,
+        None,
+        &mut forward_state,
+        &shadowed,
+        &mut defer_state,
+    )?;
+
+    let layout_name = match &file.layout_use {
+        Some(LayoutUse::None) => None,
+        Some(LayoutUse::Apply { name, .. }) => Some(name.as_str()),
+        None => default_layout,
+    };
+
+    let page_scope_id = scope_id_for_file(file);
+    let page_html = apply_file_styles(file, &page_scope_id, &mut context, page_html);
+
+    let html = if let Some(layout_name) = layout_name {
+        let layout_file = layouts.get(layout_name).ok_or_else(|| {
+            Diagnostic::error(
+                Span::at(1, 1),
+                format!("unknown layout `{layout_name}`"),
+                None,
+            )
+        })?;
+        let layout_scope = layout_scope_for(layout_file, file.layout_use.as_ref(), &scope)?;
+        let mut layout_island = None;
+        let mut forward_state = None;
+        let mut html = render_nodes(
+            &layout_file.template,
+            &layout_scope,
+            components,
+            runtime,
+            &mut context,
+            &mut layout_island,
+            Some(&page_html),
+            &mut forward_state,
+            &shadowed,
+            &mut defer_state,
+        )?;
+        let layout_scope_id = scope_id_for_file(layout_file);
+        apply_file_styles(layout_file, &layout_scope_id, &mut context, html)
+    } else {
+        page_html
+    };
+
+    let deferred = defer_state.map(|state| state.blocks).unwrap_or_default();
+    Ok(StreamingRenderOutput {
+        shell: render_output(html, &context),
+        deferred,
+    })
+}
+
+pub async fn render_deferred_block(
+    block: &DeferredBlock,
+    file: &WebFile,
+    components: &ComponentRegistry,
+    runtime: &WebRuntime,
+) -> Result<RenderOutput, Diagnostic> {
+    let mut scope = block.scope.clone();
+    let mut session = match scope.get("session") {
+        Some(Value::Object(session)) => session.clone(),
+        _ => BTreeMap::new(),
+    };
+    let mut context = page_render_context(file);
+    let mut island = None;
+    let mut forward_state = None;
+    let shadowed = BTreeSet::new();
+    let mut nested_defer = None;
+
+    let render_body = async {
+        let body_html = render_nodes(
+            &block.body,
+            &scope,
+            components,
+            runtime,
+            &mut context,
+            &mut island,
+            None,
+            &mut forward_state,
+            &shadowed,
+            &mut nested_defer,
+        )?;
+        if let Some(mut nested) = nested_defer {
+            let mut html = body_html;
+            for nested_block in std::mem::take(&mut nested.blocks) {
+                let fragment =
+                    Box::pin(render_deferred_block(&nested_block, file, components, runtime))
+                        .await?;
+                html = replace_defer_wrapper(&html, &nested_block.id, &fragment)
+                    .ok_or_else(|| defer_wrapper_not_found(&nested_block.id))?;
+                context.islands.extend(fragment.islands);
+                context
+                    .global_styles
+                    .extend(fragment.global_styles.clone());
+                for (key, value) in fragment.scoped_styles {
+                    context.scoped_styles.insert(key, value);
+                }
+            }
+            Ok(html)
+        } else {
+            Ok(body_html)
+        }
+    };
+
+    let body_html = match runtime
+        .execute_block_async(&block.prelude, &mut scope, &mut session)
+        .await
+    {
+        Ok(_) => {
+            scope.insert("session".to_string(), Value::Object(session));
+            render_body.await?
+        }
+        Err(error) => {
+            if let Some(error_name) = &block.error_name {
+                scope.insert(
+                    error_name.clone(),
+                    stmt::error_value(error.message.clone()),
+                );
+                scope.insert("session".to_string(), Value::Object(session));
+                render_nodes(
+                    &block.error_body,
+                    &scope,
+                    components,
+                    runtime,
+                    &mut context,
+                    &mut island,
+                    None,
+                    &mut forward_state,
+                    &shadowed,
+                    &mut None,
+                )?
+            } else {
+                return Err(error);
+            }
+        }
+    };
+
+    Ok(render_output(body_html, &context))
+}
+
+pub fn defer_replacement_html(fragment: &RenderOutput) -> String {
+    let style_fragment =
+        crate::style::render_style_tags(&fragment.global_styles, &fragment.scoped_styles);
+    let island_scripts: String = fragment
+        .islands
+        .iter()
+        .map(crate::client::render_island_script)
+        .collect();
+    let mut html = String::new();
+    html.push_str(&style_fragment);
+    html.push_str(&fragment.html);
+    html.push_str(&island_scripts);
+    html
+}
+
+pub fn format_defer_stream_chunk(id: &str, fragment: &RenderOutput) -> String {
+    let replacement = defer_replacement_html(fragment);
+    crate::client::format_defer_chunk_script(id, &replacement)
+}
+
+async fn assemble_buffered_streaming(
+    streaming: StreamingRenderOutput,
+    file: &WebFile,
+    components: &ComponentRegistry,
+    runtime: &WebRuntime,
+) -> Result<RenderOutput, Diagnostic> {
+    let mut output = streaming.shell;
+    for block in streaming.deferred {
+        let fragment = render_deferred_block(&block, file, components, runtime).await?;
+        output.html = replace_defer_wrapper(&output.html, &block.id, &fragment)
+            .ok_or_else(|| defer_wrapper_not_found(&block.id))?;
+        output.islands.extend(fragment.islands);
+        output.global_styles.extend(fragment.global_styles);
+        for (key, value) in fragment.scoped_styles {
+            output.scoped_styles.insert(key, value);
+        }
+    }
+    Ok(output)
+}
+
+fn layout_has_defer(
+    layouts: &LayoutRegistry,
+    default_layout: Option<&str>,
+    file: &WebFile,
+) -> bool {
+    let layout_name = match &file.layout_use {
+        Some(LayoutUse::None) => None,
+        Some(LayoutUse::Apply { name, .. }) => Some(name.as_str()),
+        None => default_layout,
+    };
+    layout_name
+        .and_then(|name| layouts.get(name))
+        .is_some_and(|layout| nodes_have_defer(&layout.template))
+}
+
+fn nodes_have_defer(nodes: &[TemplateNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        TemplateNode::Defer { .. } => true,
+        TemplateNode::If {
+            then_nodes,
+            else_nodes,
+            ..
+        } => nodes_have_defer(then_nodes) || nodes_have_defer(else_nodes),
+        TemplateNode::Switch {
+            cases,
+            default_nodes,
+            ..
+        } => {
+            cases.iter().any(|case| nodes_have_defer(&case.nodes))
+                || nodes_have_defer(default_nodes)
+        }
+        TemplateNode::For { body, .. } => nodes_have_defer(body),
+        _ => false,
+    })
+}
+
+fn replace_defer_wrapper(
+    html: &str,
+    id: &str,
+    fragment: &RenderOutput,
+) -> Option<String> {
+    let start_marker = format!("<!--ws-defer:{id}-->");
+    let end_marker = format!("<!--/ws-defer:{id}-->");
+    let inner_start = html.find(&start_marker)? + start_marker.len();
+    let inner_end = html.find(&end_marker)?;
+    let wrapper_start = html[..inner_start].rfind("<div ")?;
+    let wrapper_end = inner_end + end_marker.len() + "</div>".len();
+    let replacement = defer_replacement_html(fragment);
+    let mut out = String::with_capacity(html.len() + replacement.len());
+    out.push_str(&html[..wrapper_start]);
+    out.push_str(&replacement);
+    out.push_str(&html[wrapper_end..]);
+    Some(out)
+}
+
+fn defer_wrapper_not_found(id: &str) -> Diagnostic {
+    Diagnostic::error(
+        Span::at(1, 1),
+        format!("deferred block `{id}` placeholder not found in shell HTML"),
+        None,
+    )
 }
 
 fn render_output(html: String, context: &RenderContext) -> RenderOutput {
@@ -630,6 +947,7 @@ fn render_nodes(
     slot_content: Option<&str>,
     forward_state: &mut Option<ForwardContext>,
     shadowed_props: &BTreeSet<String>,
+    defer_state: &mut Option<DeferCollectState>,
 ) -> Result<String, Diagnostic> {
     let mut html = String::new();
     let mut scope = scope.clone();
@@ -819,6 +1137,50 @@ fn render_nodes(
                 };
                 stmt::execute_sync(statements, &mut scope, &mut session)?;
                 scope.insert("session".to_string(), Value::Object(session));
+            }
+            TemplateNode::Defer {
+                prelude,
+                body,
+                placeholder,
+                error_name,
+                error_body,
+                line,
+            } => {
+                let Some(state) = defer_state else {
+                    return Err(Diagnostic::error(
+                        Span::at(*line, 1),
+                        "@defer requires async streaming render",
+                        None,
+                    ));
+                };
+                let id = format!("defer-{}-{}", state.scope_id, state.next_id);
+                state.next_id += 1;
+                let placeholder_html = render_nodes(
+                    placeholder,
+                    &scope,
+                    components,
+                    runtime,
+                    context,
+                    island,
+                    slot_content,
+                    forward_state,
+                    shadowed_props,
+                    defer_state,
+                )?;
+                html.push_str(&format!(
+                    r#"<div data-web-defer="{id}" data-web-defer-state="pending"><!--ws-defer:{id}-->"#
+                ));
+                html.push_str(&placeholder_html);
+                html.push_str(&format!("<!--/ws-defer:{id}--></div>"));
+                state.blocks.push(DeferredBlock {
+                    id,
+                    prelude: prelude.clone(),
+                    body: body.clone(),
+                    error_name: error_name.clone(),
+                    error_body: error_body.clone(),
+                    scope: scope.clone(),
+                    line: *line,
+                });
             }
             TemplateNode::EventBinding(binding) => {
                 register_event_binding(binding, island, false)?;
