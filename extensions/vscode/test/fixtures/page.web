@@ -1,0 +1,49 @@
+@page "/"
+
+@load {
+  _: object = await sleep(10ms)
+  loaded: string = "page data ready"
+}
+
+@let name = "Ada"
+@let visits = 2 + 3
+@let ready = visits == 5 && name != "Guest"
+@let author = {
+  name: "Ada"
+  role: "admin"
+}
+@let posts = [
+  { title: "Intro", slug: "intro", featured: true },
+  { title: "Launch", slug: "launch", featured: false }
+]
+
+@action rememberName(input: AddTodoInput) {
+  if input.name == "" {
+    fail("Name is required")
+  }
+  session.name = input.name
+  redirect("/")
+}
+
+<main>
+  <h1>{name}</h1>
+  <p>@load: {loaded}</p>
+  <p>Author: {author.name}</p>
+
+  @do {
+    discount: int = 0
+    if visits > 4 {
+      discount = 10
+    }
+  }
+
+  @if ready && !false {
+    <PostPreview title={"Pinned for " + author.name} featured={ready} />
+  } @else {
+    <p>The intro is hidden.</p>
+  }
+
+  @for post in posts {
+    <PostPreview title={post.title} featured={post.featured} />
+  }
+</main>

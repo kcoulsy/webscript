@@ -1,0 +1,30 @@
+@component Counter {
+  initial: int = 0
+  label: string = "Count"
+}
+
+@client {
+  count: signal<int> = initial
+}
+
+<div class="counter">
+  <p class="counter-label">{label}: <strong>{count}</strong></p>
+  <div class="button-row">
+    <UI.Button label="+" variant="outline" size="sm" @click={count++} />
+    <UI.Button label="-" variant="outline" size="sm" @click={count--} />
+    <UI.Button label="Reset" variant="ghost" size="sm" @click={count = 0} />
+  </div>
+</div>
+
+@style {
+  .counter {
+    border: 1px solid var(--ui-border);
+    padding: 1rem;
+  }
+
+  @media (min-width: 600px) {
+    .counter {
+      padding: 2rem;
+    }
+  }
+}

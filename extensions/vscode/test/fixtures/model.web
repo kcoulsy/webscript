@@ -1,0 +1,9 @@
+@model Todo {
+  id: int @primary @auto
+  title: string
+  done: bool @default(false)
+  createdAt: datetime @default(now)
+  authorId: int @references(User.id) @relation(author)
+  @index(done, createdAt)
+  @uniqueIndex(title)
+}

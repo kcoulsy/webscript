@@ -1,0 +1,30 @@
+@component EventDemo {}
+
+@client {
+  note: signal<string> = ""
+  status: signal<string> = "idle"
+  submitted: signal<bool> = false
+  keyCount: signal<int> = 0
+
+  fn save() {
+    submitted = true
+    status = "Saved: " + note
+  }
+}
+
+<div class="event-demo">
+  <form @submit.prevent={|event| save()} class="form-stack">
+    <UI.Input
+      id="event-note"
+      name="note"
+      value={note}
+      @change={|event| note = event.target.value}
+    />
+  </form>
+</div>
+
+@style {
+  .event-demo {
+    display: grid;
+  }
+}

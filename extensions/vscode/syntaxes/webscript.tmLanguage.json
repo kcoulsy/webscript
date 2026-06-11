@@ -1,0 +1,921 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "WebScript",
+  "scopeName": "source.webscript",
+  "fileTypes": [
+    "web"
+  ],
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#style-block"
+    },
+    {
+      "include": "#block-directives"
+    },
+    {
+      "include": "#line-directives"
+    },
+    {
+      "include": "#event-binding"
+    },
+    {
+      "include": "#interpolation"
+    },
+    {
+      "include": "#markup"
+    },
+    {
+      "include": "#expressions"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.double-slash.webscript",
+          "match": "//.*$"
+        },
+        {
+          "name": "comment.block.webscript",
+          "begin": "/\\*",
+          "end": "\\*/"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.webscript",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.webscript",
+              "match": "\\\\."
+            },
+            {
+              "include": "#string-interpolation"
+            }
+          ]
+        },
+        {
+          "name": "string.quoted.single.webscript",
+          "begin": "'",
+          "end": "'",
+          "patterns": [
+            {
+              "name": "constant.character.escape.webscript",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "numbers-and-durations": {
+      "patterns": [
+        {
+          "name": "constant.numeric.duration.webscript",
+          "match": "\\b\\d+(?:\\.\\d+)?(?:ms|s|m|h|d)\\b"
+        },
+        {
+          "name": "constant.numeric.webscript",
+          "match": "\\b\\d+(?:\\.\\d+)?\\b"
+        }
+      ]
+    },
+    "types": {
+      "patterns": [
+        {
+          "name": "storage.type.primitive.webscript",
+          "match": "\\b(?:string|int|float|bool|date|datetime|duration|bytes|object|void|Redirect|Json|Money|File)\\b"
+        },
+        {
+          "name": "storage.type.signal.webscript",
+          "begin": "\\bsignal\\s*(<)",
+          "beginCaptures": {
+            "0": {
+              "name": "storage.type.signal.webscript"
+            },
+            "1": {
+              "name": "punctuation.definition.generic.begin.webscript"
+            }
+          },
+          "end": ">",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.generic.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#types"
+            },
+            {
+              "name": "entity.name.type.webscript",
+              "match": "\\b[A-Z][A-Za-z0-9_.]*\\b"
+            },
+            {
+              "name": "punctuation.separator.type.webscript",
+              "match": "[\\[\\].,?]"
+            }
+          ]
+        },
+        {
+          "name": "entity.name.type.webscript",
+          "match": "\\b[A-Z][A-Za-z0-9_.]*\\b"
+        }
+      ]
+    },
+    "expressions": {
+      "patterns": [
+        {
+          "include": "#comments"
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "include": "#numbers-and-durations"
+        },
+        {
+          "include": "#types"
+        },
+        {
+          "name": "constant.language.boolean.webscript",
+          "match": "\\b(?:true|false|null)\\b"
+        },
+        {
+          "name": "keyword.control.webscript",
+          "match": "\\b(?:await|return|if|else|while|try|catch|throw|spawn|timeout|fn|import|export)\\b"
+        },
+        {
+          "name": "support.function.builtin.webscript",
+          "match": "\\b(?:fail|redirect|notFound|sleep|fetch)\\b(?=\\s*\\()"
+        },
+        {
+          "name": "keyword.operator.assignment.webscript",
+          "match": ":=|=>|->|\\+\\+|--|[+\\-*/%]?="
+        },
+        {
+          "name": "keyword.operator.comparison.webscript",
+          "match": "&&|\\|\\||==|!=|<=|>=|<|>|!"
+        },
+        {
+          "name": "keyword.operator.arithmetic.webscript",
+          "match": "[+\\-*/%]"
+        },
+        {
+          "name": "variable.other.property.webscript",
+          "match": "(?<=\\.)[A-Za-z_][A-Za-z0-9_]*"
+        },
+        {
+          "name": "entity.name.function.webscript",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*(?=\\s*\\()"
+        },
+        {
+          "name": "variable.other.webscript",
+          "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+        },
+        {
+          "name": "punctuation.webscript",
+          "match": "[{}\\[\\]();,.:?]"
+        }
+      ]
+    },
+    "line-directives": {
+      "patterns": [
+        {
+          "name": "meta.directive.page.webscript",
+          "match": "^\\s*(@page)\\s+(\"(?:\\\\.|[^\"\\\\])*\")",
+          "captures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            },
+            "2": {
+              "name": "string.quoted.double.route.webscript"
+            }
+          }
+        },
+        {
+          "name": "meta.directive.layout-none.webscript",
+          "match": "^\\s*(@layout)\\s+(none)\\b",
+          "captures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            },
+            "2": {
+              "name": "constant.language.webscript"
+            }
+          }
+        },
+        {
+          "name": "meta.directive.let.webscript",
+          "begin": "^\\s*(@let)\\b",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            }
+          },
+          "end": "$",
+          "patterns": [
+            {
+              "include": "#expressions"
+            }
+          ]
+        },
+        {
+          "name": "keyword.control.directive.webscript",
+          "match": "^\\s*@(?:require|auth|guest|session|api|props|query|body|headers|await|loading|then|error|defer|placeholder|deploy)\\b"
+        }
+      ]
+    },
+    "block-directives": {
+      "patterns": [
+        {
+          "name": "meta.directive.model.webscript",
+          "begin": "^\\s*(@model)\\s+([A-Z][A-Za-z0-9_]*)\\s*(\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            },
+            "2": {
+              "name": "entity.name.type.model.webscript"
+            },
+            "3": {
+              "name": "punctuation.section.block.begin.webscript"
+            }
+          },
+          "end": "^(\\})",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.block.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#model-index"
+            },
+            {
+              "include": "#model-field"
+            }
+          ]
+        },
+        {
+          "name": "meta.directive.schema.webscript",
+          "begin": "^\\s*(@schema)\\s+([A-Z][A-Za-z0-9_]*)\\s*(\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            },
+            "2": {
+              "name": "entity.name.type.schema.webscript"
+            },
+            "3": {
+              "name": "punctuation.section.block.begin.webscript"
+            }
+          },
+          "end": "^(\\})",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.block.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#schema-field"
+            }
+          ]
+        },
+        {
+          "name": "meta.directive.component.empty.webscript",
+          "match": "^\\s*(@component)\\s+([A-Z][A-Za-z0-9_.]*)\\s*(\\{\\})",
+          "captures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            },
+            "2": {
+              "name": "entity.name.type.component.webscript"
+            },
+            "3": {
+              "name": "punctuation.section.block.webscript"
+            }
+          }
+        },
+        {
+          "name": "meta.directive.component.webscript",
+          "begin": "^\\s*(@component)\\s+([A-Z][A-Za-z0-9_.]*)\\s*(\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            },
+            "2": {
+              "name": "entity.name.type.component.webscript"
+            },
+            "3": {
+              "name": "punctuation.section.block.begin.webscript"
+            }
+          },
+          "end": "^(\\})",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.block.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#prop-declaration"
+            }
+          ]
+        },
+        {
+          "name": "meta.directive.layout.webscript",
+          "begin": "^\\s*(@layout)\\s+([A-Z][A-Za-z0-9_.]*)\\s*(\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            },
+            "2": {
+              "name": "entity.name.type.layout.webscript"
+            },
+            "3": {
+              "name": "punctuation.section.block.begin.webscript"
+            }
+          },
+          "end": "^(\\})",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.block.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#comments"
+            },
+            {
+              "include": "#prop-declaration"
+            },
+            {
+              "include": "#expressions"
+            }
+          ]
+        },
+        {
+          "name": "meta.directive.load.webscript",
+          "begin": "^\\s*(@load)\\s*(\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            },
+            "2": {
+              "name": "punctuation.section.block.begin.webscript"
+            }
+          },
+          "end": "^(\\})",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.block.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#expressions"
+            }
+          ]
+        },
+        {
+          "name": "meta.directive.action.webscript",
+          "begin": "^\\s*(@action)\\s+([A-Za-z_][A-Za-z0-9_]*)(?:\\s*\\(\\s*(input)\\s*(:)\\s*([A-Z][A-Za-z0-9_.]*)\\s*\\))?\\s*(\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            },
+            "2": {
+              "name": "entity.name.function.action.webscript"
+            },
+            "3": {
+              "name": "variable.parameter.webscript"
+            },
+            "4": {
+              "name": "punctuation.separator.type.webscript"
+            },
+            "5": {
+              "name": "entity.name.type.webscript"
+            },
+            "6": {
+              "name": "punctuation.section.block.begin.webscript"
+            }
+          },
+          "end": "^(\\})",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.block.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#expressions"
+            }
+          ]
+        },
+        {
+          "name": "meta.directive.client.webscript",
+          "begin": "^\\s*(@client)\\s*(\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            },
+            "2": {
+              "name": "punctuation.section.block.begin.webscript"
+            }
+          },
+          "end": "^(\\})",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.block.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#expressions"
+            }
+          ]
+        },
+        {
+          "name": "meta.directive.template-control.webscript",
+          "begin": "^\\s*(@(?:if|for|do))\\b",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            }
+          },
+          "end": "(\\{)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.block.begin.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#expressions"
+            },
+            {
+              "name": "keyword.control.webscript",
+              "match": "\\bin\\b"
+            }
+          ]
+        },
+        {
+          "name": "meta.directive.else.webscript",
+          "match": "\\}\\s*(@else)\\s*\\{",
+          "captures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            }
+          }
+        }
+      ]
+    },
+    "prop-declaration": {
+      "patterns": [
+        {
+          "name": "meta.property.declaration.webscript",
+          "begin": "^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(:)",
+          "beginCaptures": {
+            "1": {
+              "name": "variable.other.member.webscript"
+            },
+            "2": {
+              "name": "punctuation.separator.type.webscript"
+            }
+          },
+          "end": "$",
+          "patterns": [
+            {
+              "include": "#expressions"
+            }
+          ]
+        }
+      ]
+    },
+    "model-field": {
+      "patterns": [
+        {
+          "name": "meta.model.field.webscript",
+          "begin": "^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(:)",
+          "beginCaptures": {
+            "1": {
+              "name": "variable.other.member.model.webscript"
+            },
+            "2": {
+              "name": "punctuation.separator.type.webscript"
+            }
+          },
+          "end": "$",
+          "patterns": [
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#model-decorator"
+            },
+            {
+              "name": "punctuation.separator.type.webscript",
+              "match": "[\\[\\].,?]"
+            }
+          ]
+        }
+      ]
+    },
+    "schema-field": {
+      "patterns": [
+        {
+          "name": "meta.schema.field.webscript",
+          "begin": "^\\s*([A-Za-z_][A-Za-z0-9_]*)\\s*(:)",
+          "beginCaptures": {
+            "1": {
+              "name": "variable.other.member.schema.webscript"
+            },
+            "2": {
+              "name": "punctuation.separator.type.webscript"
+            }
+          },
+          "end": "$",
+          "patterns": [
+            {
+              "include": "#types"
+            },
+            {
+              "include": "#schema-decorator"
+            },
+            {
+              "name": "punctuation.separator.type.webscript",
+              "match": "[\\[\\].,?]"
+            }
+          ]
+        }
+      ]
+    },
+    "model-index": {
+      "patterns": [
+        {
+          "name": "meta.model.index.webscript",
+          "begin": "^\\s*(@(?:index|uniqueIndex))\\s*(\\()",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.decorator.model.webscript"
+            },
+            "2": {
+              "name": "punctuation.definition.arguments.begin.webscript"
+            }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.arguments.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "name": "variable.other.member.model.webscript",
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+            },
+            {
+              "name": "punctuation.separator.comma.webscript",
+              "match": ","
+            }
+          ]
+        }
+      ]
+    },
+    "model-decorator": {
+      "patterns": [
+        {
+          "name": "keyword.control.decorator.model.webscript",
+          "match": "@(?:primary|auto|unique|nullable)\\b"
+        },
+        {
+          "name": "meta.decorator.default.webscript",
+          "begin": "(@default)\\s*(\\()",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.decorator.model.webscript"
+            },
+            "2": {
+              "name": "punctuation.definition.arguments.begin.webscript"
+            }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.arguments.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#expressions"
+            }
+          ]
+        },
+        {
+          "name": "meta.decorator.reference.webscript",
+          "begin": "(@references)\\s*(\\()",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.decorator.model.webscript"
+            },
+            "2": {
+              "name": "punctuation.definition.arguments.begin.webscript"
+            }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.arguments.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "name": "entity.name.type.model.webscript",
+              "match": "\\b[A-Z][A-Za-z0-9_]*\\b"
+            },
+            {
+              "name": "variable.other.member.model.webscript",
+              "match": "(?<=\\.)[A-Za-z_][A-Za-z0-9_]*"
+            },
+            {
+              "name": "punctuation.accessor.webscript",
+              "match": "\\."
+            }
+          ]
+        },
+        {
+          "name": "meta.decorator.relation.webscript",
+          "begin": "(@relation)\\s*(\\()",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.decorator.model.webscript"
+            },
+            "2": {
+              "name": "punctuation.definition.arguments.begin.webscript"
+            }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.arguments.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "name": "variable.other.relation.webscript",
+              "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+            }
+          ]
+        }
+      ]
+    },
+    "schema-decorator": {
+      "patterns": [
+        {
+          "name": "keyword.control.decorator.schema.webscript",
+          "match": "@(?:optional|email)\\b"
+        },
+        {
+          "name": "meta.decorator.validation.webscript",
+          "begin": "(@(?:min|max))\\s*(\\()",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.decorator.schema.webscript"
+            },
+            "2": {
+              "name": "punctuation.definition.arguments.begin.webscript"
+            }
+          },
+          "end": "\\)",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.definition.arguments.end.webscript"
+            }
+          },
+          "patterns": [
+            {
+              "include": "#numbers-and-durations"
+            }
+          ]
+        }
+      ]
+    },
+    "event-binding": {
+      "patterns": [
+        {
+          "name": "meta.event-binding.webscript",
+          "begin": "(@[A-Za-z][A-Za-z0-9_-]*)(?:(\\.)(prevent|stop))*\\s*(=)\\s*(\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "entity.other.attribute-name.event.webscript"
+            },
+            "2": {
+              "name": "punctuation.accessor.webscript"
+            },
+            "3": {
+              "name": "support.constant.event-modifier.webscript"
+            },
+            "4": {
+              "name": "keyword.operator.assignment.webscript"
+            },
+            "5": {
+              "name": "punctuation.section.embedded.begin.webscript"
+            }
+          },
+          "end": "\\}",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.embedded.end.webscript"
+            }
+          },
+          "contentName": "source.webscript.expression",
+          "patterns": [
+            {
+              "include": "#expressions"
+            }
+          ]
+        }
+      ]
+    },
+    "interpolation": {
+      "patterns": [
+        {
+          "name": "meta.embedded.expression.webscript",
+          "begin": "\\{",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.section.embedded.begin.webscript"
+            }
+          },
+          "end": "\\}",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.embedded.end.webscript"
+            }
+          },
+          "contentName": "source.webscript.expression",
+          "patterns": [
+            {
+              "include": "#expressions"
+            }
+          ]
+        }
+      ]
+    },
+    "string-interpolation": {
+      "patterns": [
+        {
+          "name": "meta.embedded.expression.webscript",
+          "begin": "\\{",
+          "beginCaptures": {
+            "0": {
+              "name": "punctuation.section.embedded.begin.webscript"
+            }
+          },
+          "end": "\\}",
+          "endCaptures": {
+            "0": {
+              "name": "punctuation.section.embedded.end.webscript"
+            }
+          },
+          "contentName": "source.webscript.expression",
+          "patterns": [
+            {
+              "include": "#expressions"
+            }
+          ]
+        }
+      ]
+    },
+    "markup": {
+      "patterns": [
+        {
+          "name": "meta.tag.component.webscript",
+          "begin": "(</?)([A-Z][A-Za-z0-9_.]*)",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.tag.begin.webscript"
+            },
+            "2": {
+              "name": "entity.name.tag.component.webscript"
+            }
+          },
+          "end": "(/?>)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.tag.end.webscript"
+            }
+          },
+          "contentName": "text.html.basic",
+          "patterns": [
+            {
+              "include": "#event-binding"
+            },
+            {
+              "include": "#tag-attributes"
+            },
+            {
+              "include": "#interpolation"
+            }
+          ]
+        },
+        {
+          "name": "meta.tag.html.webscript",
+          "begin": "(</?)([a-z][A-Za-z0-9:-]*)",
+          "beginCaptures": {
+            "1": {
+              "name": "punctuation.definition.tag.begin.html"
+            },
+            "2": {
+              "name": "entity.name.tag.html"
+            }
+          },
+          "end": "(/?>)",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.definition.tag.end.html"
+            }
+          },
+          "contentName": "text.html.basic",
+          "patterns": [
+            {
+              "include": "#event-binding"
+            },
+            {
+              "include": "#tag-attributes"
+            },
+            {
+              "include": "#interpolation"
+            }
+          ]
+        }
+      ]
+    },
+    "tag-attributes": {
+      "patterns": [
+        {
+          "name": "entity.other.attribute-name.html",
+          "match": "\\b[A-Za-z_:][-A-Za-z0-9_:.]*(?=\\s*(?:=|/?>))"
+        },
+        {
+          "name": "keyword.operator.assignment.html",
+          "match": "="
+        },
+        {
+          "include": "#strings"
+        },
+        {
+          "include": "#interpolation"
+        }
+      ]
+    },
+    "style-block": {
+      "patterns": [
+        {
+          "name": "meta.directive.style.webscript",
+          "begin": "^\\s*(@style)(?:\\s+(global|scoped))?\\s*(\\{)",
+          "beginCaptures": {
+            "1": {
+              "name": "keyword.control.directive.webscript"
+            },
+            "2": {
+              "name": "storage.modifier.webscript"
+            },
+            "3": {
+              "name": "punctuation.section.block.begin.webscript"
+            }
+          },
+          "end": "^(\\})",
+          "endCaptures": {
+            "1": {
+              "name": "punctuation.section.block.end.webscript"
+            }
+          },
+          "contentName": "source.css",
+          "patterns": [
+            {
+              "include": "source.css"
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

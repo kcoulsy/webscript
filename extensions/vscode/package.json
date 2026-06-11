@@ -1,0 +1,53 @@
+{
+  "name": "webscript-vscode",
+  "displayName": "WebScript",
+  "description": "Syntax highlighting and editor support for WebScript .web files.",
+  "version": "0.0.1",
+  "publisher": "webscript",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "keywords": [
+    "webscript",
+    "web",
+    "syntax"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "webscript",
+        "aliases": [
+          "WebScript",
+          "webscript"
+        ],
+        "extensions": [
+          ".web"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "webscript",
+        "scopeName": "source.webscript",
+        "path": "./syntaxes/webscript.tmLanguage.json",
+        "embeddedLanguages": {
+          "text.html.basic": "html",
+          "source.css": "css",
+          "source.webscript.expression": "webscript"
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "package": "vsce package",
+    "test:grammar": "node ./scripts/test-grammar.mjs"
+  },
+  "devDependencies": {
+    "@vscode/vsce": "^3.0.0"
+  }
+}
