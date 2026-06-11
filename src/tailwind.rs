@@ -1,8 +1,8 @@
-use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeSet;
+use std::collections::HashMap;
 use std::fs;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
+use std::time::SystemTime;
 
 use tailwind_rs_core::CssGenerator;
 
@@ -16,8 +16,8 @@ pub struct TailwindCache {
 
 #[derive(Debug, Clone)]
 struct CachedStylesheet {
-    source_hash: u64,
     css: String,
+    file_mtimes: HashMap<PathBuf, SystemTime>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -32,22 +32,34 @@ impl TailwindCache {
     }
 
     pub fn stylesheet(&mut self, root: &Path) -> Result<String, String> {
-        let sources = ProjectSources::load(root)?;
-        let source_hash = sources.hash();
+        let current_mtimes = collect_file_mtimes(root)?;
 
         if let Some(cached) = &self.cached {
-            if cached.source_hash == source_hash {
+            if cached.file_mtimes == current_mtimes {
                 return Ok(cached.css.clone());
             }
         }
 
+        let sources = ProjectSources::load(root)?;
         let css = generate_css_from_sources(&sources)?;
         self.cached = Some(CachedStylesheet {
-            source_hash,
             css: css.clone(),
+            file_mtimes: current_mtimes,
         });
         Ok(css)
     }
+}
+
+fn collect_file_mtimes(root: &Path) -> Result<HashMap<PathBuf, SystemTime>, String> {
+    let mut paths = Vec::new();
+    collect_web_files(&root.join("app"), &mut paths)?;
+    let mut mtimes = HashMap::new();
+    for path in paths {
+        let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
+        let mtime = metadata.modified().map_err(|error| error.to_string())?;
+        mtimes.insert(path, mtime);
+    }
+    Ok(mtimes)
 }
 
 pub fn enabled(root: &Path) -> bool {
@@ -218,15 +230,6 @@ impl ProjectSources {
         }
 
         Ok(Self { files })
-    }
-
-    fn hash(&self) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        for (path, source) in &self.files {
-            path.hash(&mut hasher);
-            source.hash(&mut hasher);
-        }
-        hasher.finish()
     }
 }
 
