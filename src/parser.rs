@@ -149,6 +149,11 @@ pub enum TemplateNode {
         then_nodes: Vec<TemplateNode>,
         else_nodes: Vec<TemplateNode>,
     },
+    Switch {
+        value: SourceExpr,
+        cases: Vec<SwitchCase>,
+        default_nodes: Vec<TemplateNode>,
+    },
     For {
         item_name: String,
         source: SourceExpr,
@@ -160,6 +165,12 @@ pub enum TemplateNode {
     },
     EventBinding(EventBinding),
     Slot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SwitchCase {
+    pub value: SourceExpr,
+    pub nodes: Vec<TemplateNode>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -474,7 +485,12 @@ fn parse_nodes(
         let line_number = *cursor + 1;
         let trimmed = raw_line.trim();
 
-        if stop_on_close && (trimmed == "}" || trimmed.starts_with("} @else")) {
+        if stop_on_close
+            && (trimmed == "}"
+                || trimmed.starts_with("} @else")
+                || trimmed.starts_with("} @case")
+                || trimmed == "} @default {")
+        {
             break;
         }
 
@@ -496,6 +512,14 @@ fn parse_nodes(
 
         if trimmed.starts_with("@for ") {
             nodes.push(parse_for(lines, cursor, lets)?);
+            if *cursor < lines.len() && !is_block_close(lines[*cursor].trim()) {
+                nodes.push(TemplateNode::Text("\n".to_string()));
+            }
+            continue;
+        }
+
+        if trimmed.starts_with("@switch ") {
+            nodes.push(parse_switch(lines, cursor, lets)?);
             if *cursor < lines.len() && !is_block_close(lines[*cursor].trim()) {
                 nodes.push(TemplateNode::Text("\n".to_string()));
             }
@@ -1555,7 +1579,9 @@ fn parse_if(
 
     if close_line == "}" {
         *cursor += 1;
-        if *cursor < lines.len() && lines[*cursor].trim() == "@else {" {
+        if *cursor < lines.len() && lines[*cursor].trim().starts_with("@else if ") {
+            else_nodes.push(parse_else_if(lines, cursor, lets)?);
+        } else if *cursor < lines.len() && lines[*cursor].trim() == "@else {" {
             *cursor += 1;
             else_nodes = parse_nodes(lines, cursor, true, lets)?;
             if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
@@ -1563,6 +1589,8 @@ fn parse_if(
             }
             *cursor += 1;
         }
+    } else if close_line.starts_with("} @else if ") {
+        else_nodes.push(parse_inline_else_if(lines, cursor, lets)?);
     } else if close_line == "} @else {" {
         *cursor += 1;
         else_nodes = parse_nodes(lines, cursor, true, lets)?;
@@ -1583,6 +1611,217 @@ fn parse_if(
         },
         then_nodes,
         else_nodes,
+    })
+}
+
+fn parse_else_if(
+    lines: &[&str],
+    cursor: &mut usize,
+    lets: &mut Vec<LetDecl>,
+) -> Result<TemplateNode, Diagnostic> {
+    let raw_line = lines[*cursor];
+    let line_number = *cursor + 1;
+    let trimmed = raw_line.trim();
+    let condition_source = trimmed
+        .strip_prefix("@else if")
+        .expect("@else if prefix checked")
+        .trim()
+        .strip_suffix('{')
+        .ok_or_else(|| {
+            parse_diagnostic_line(line_number, "@else if expects `@else if condition {`")
+        })?
+        .trim();
+
+    parse_if_branch(lines, cursor, lets, raw_line, line_number, condition_source)
+}
+
+fn parse_inline_else_if(
+    lines: &[&str],
+    cursor: &mut usize,
+    lets: &mut Vec<LetDecl>,
+) -> Result<TemplateNode, Diagnostic> {
+    let raw_line = lines[*cursor];
+    let line_number = *cursor + 1;
+    let trimmed = raw_line.trim();
+    let condition_source = trimmed
+        .strip_prefix("} @else if")
+        .expect("} @else if prefix checked")
+        .trim()
+        .strip_suffix('{')
+        .ok_or_else(|| {
+            parse_diagnostic_line(line_number, "@else if expects `} @else if condition {`")
+        })?
+        .trim();
+
+    parse_if_branch(lines, cursor, lets, raw_line, line_number, condition_source)
+}
+
+fn parse_if_branch(
+    lines: &[&str],
+    cursor: &mut usize,
+    lets: &mut Vec<LetDecl>,
+    raw_line: &str,
+    line_number: usize,
+    condition_source: &str,
+) -> Result<TemplateNode, Diagnostic> {
+    let column = raw_line
+        .find(condition_source)
+        .map(|index| index + 1)
+        .unwrap_or(1);
+    let condition_expr = expr::parse(condition_source, line_number, column)?;
+
+    *cursor += 1;
+    let then_nodes = parse_nodes(lines, cursor, true, lets)?;
+
+    if *cursor >= lines.len() {
+        return Err(parse_diagnostic_line(line_number, "unclosed @else if block"));
+    }
+
+    let close_line = lines[*cursor].trim();
+    let mut else_nodes = Vec::new();
+
+    if close_line == "}" {
+        *cursor += 1;
+        if *cursor < lines.len() && lines[*cursor].trim().starts_with("@else if ") {
+            else_nodes.push(parse_else_if(lines, cursor, lets)?);
+        } else if *cursor < lines.len() && lines[*cursor].trim() == "@else {" {
+            *cursor += 1;
+            else_nodes = parse_nodes(lines, cursor, true, lets)?;
+            if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
+                return Err(parse_diagnostic_line(*cursor + 1, "unclosed @else block"));
+            }
+            *cursor += 1;
+        }
+    } else if close_line.starts_with("} @else if ") {
+        else_nodes.push(parse_inline_else_if(lines, cursor, lets)?);
+    } else if close_line == "} @else {" {
+        *cursor += 1;
+        else_nodes = parse_nodes(lines, cursor, true, lets)?;
+        if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
+            return Err(parse_diagnostic_line(*cursor + 1, "unclosed @else block"));
+        }
+        *cursor += 1;
+    } else {
+        return Err(parse_diagnostic_line(*cursor + 1, "expected `}`"));
+    }
+
+    Ok(TemplateNode::If {
+        condition: SourceExpr {
+            source: condition_source.to_string(),
+            expr: condition_expr,
+            line: line_number,
+            column,
+        },
+        then_nodes,
+        else_nodes,
+    })
+}
+
+fn parse_switch(
+    lines: &[&str],
+    cursor: &mut usize,
+    lets: &mut Vec<LetDecl>,
+) -> Result<TemplateNode, Diagnostic> {
+    let raw_line = lines[*cursor];
+    let line_number = *cursor + 1;
+    let trimmed = raw_line.trim();
+    let value_source = trimmed
+        .strip_prefix("@switch")
+        .expect("@switch prefix checked")
+        .trim()
+        .strip_suffix('{')
+        .ok_or_else(|| parse_diagnostic_line(line_number, "@switch expects `@switch expr {`"))?
+        .trim();
+    let column = raw_line
+        .find(value_source)
+        .map(|index| index + 1)
+        .unwrap_or(1);
+    let value_expr = expr::parse(value_source, line_number, column)?;
+
+    *cursor += 1;
+    let mut cases = Vec::new();
+    let mut default_nodes = Vec::new();
+
+    while *cursor < lines.len() {
+        let branch_line = lines[*cursor].trim();
+        if branch_line == "}" {
+            *cursor += 1;
+            return Ok(TemplateNode::Switch {
+                value: SourceExpr {
+                    source: value_source.to_string(),
+                    expr: value_expr,
+                    line: line_number,
+                    column,
+                },
+                cases,
+                default_nodes,
+            });
+        }
+        if branch_line.is_empty() {
+            *cursor += 1;
+            continue;
+        }
+        if branch_line.starts_with("@case ") {
+            cases.push(parse_switch_case(lines, cursor, lets)?);
+            continue;
+        }
+        if branch_line == "@default {" {
+            if !default_nodes.is_empty() {
+                return Err(parse_diagnostic_line(*cursor + 1, "duplicate @default block"));
+            }
+            *cursor += 1;
+            default_nodes = parse_nodes(lines, cursor, true, lets)?;
+            if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
+                return Err(parse_diagnostic_line(*cursor + 1, "unclosed @default block"));
+            }
+            *cursor += 1;
+            continue;
+        }
+        return Err(parse_diagnostic_line(
+            *cursor + 1,
+            "@switch expects @case, @default, or }",
+        ));
+    }
+
+    Err(parse_diagnostic_line(line_number, "unclosed @switch block"))
+}
+
+fn parse_switch_case(
+    lines: &[&str],
+    cursor: &mut usize,
+    lets: &mut Vec<LetDecl>,
+) -> Result<SwitchCase, Diagnostic> {
+    let raw_line = lines[*cursor];
+    let line_number = *cursor + 1;
+    let trimmed = raw_line.trim();
+    let value_source = trimmed
+        .strip_prefix("@case")
+        .expect("@case prefix checked")
+        .trim()
+        .strip_suffix('{')
+        .ok_or_else(|| parse_diagnostic_line(line_number, "@case expects `@case expr {`"))?
+        .trim();
+    let column = raw_line
+        .find(value_source)
+        .map(|index| index + 1)
+        .unwrap_or(1);
+    let value_expr = expr::parse(value_source, line_number, column)?;
+
+    *cursor += 1;
+    let nodes = parse_nodes(lines, cursor, true, lets)?;
+    if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
+        return Err(parse_diagnostic_line(line_number, "unclosed @case block"));
+    }
+    *cursor += 1;
+
+    Ok(SwitchCase {
+        value: SourceExpr {
+            source: value_source.to_string(),
+            expr: value_expr,
+            line: line_number,
+            column,
+        },
+        nodes,
     })
 }
 
@@ -2129,6 +2368,38 @@ mod tests {
         .expect("valid page");
 
         assert!(matches!(parsed.template[0], TemplateNode::If { .. }));
+    }
+
+    #[test]
+    fn parses_else_if_chain() {
+        let parsed = parse(
+            "@page \"/\"\n\n@let status = \"published\"\n\n@if status == \"draft\" {\n<p>draft</p>\n} @else if status == \"published\" {\n<p>published</p>\n} @else {\n<p>other</p>\n}",
+        )
+        .expect("valid page");
+
+        let TemplateNode::If { else_nodes, .. } = &parsed.template[0] else {
+            panic!("expected root if");
+        };
+        assert!(matches!(else_nodes.first(), Some(TemplateNode::If { .. })));
+    }
+
+    #[test]
+    fn parses_switch_cases_and_default() {
+        let parsed = parse(
+            "@page \"/\"\n\n@let size = \"icon\"\n\n@switch size {\n  @case \"icon\" {\n    <span>icon</span>\n  }\n  @case \"lg\" {\n    <span>large</span>\n  }\n  @default {\n    <span>default</span>\n  }\n}",
+        )
+        .expect("valid page");
+
+        let TemplateNode::Switch {
+            cases,
+            default_nodes,
+            ..
+        } = &parsed.template[0]
+        else {
+            panic!("expected switch");
+        };
+        assert_eq!(cases.len(), 2);
+        assert!(!default_nodes.is_empty());
     }
 
     #[test]

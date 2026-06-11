@@ -9,10 +9,35 @@
 
 @if disabled {
   <button type={type} class={"ui-button " + class} data-variant={variant} data-size={size} data-ws-bind disabled>
-    {label}
+    @switch size {
+      @case "icon" {
+        <span class="ui-button-icon-label">{label}</span>
+      }
+      @default {
+        {label}
+      }
+    }
+  </button>
+} @else if variant == "link" {
+  <button type={type} class={"ui-button " + class} data-variant={variant} data-size={size} data-ws-bind>
+    @switch size {
+      @case "icon" {
+        <span class="ui-button-icon-label">{label}</span>
+      }
+      @default {
+        {label}
+      }
+    }
   </button>
 } @else {
   <button type={type} class={"ui-button " + class} data-variant={variant} data-size={size} data-ws-bind>
-    {label}
+    @switch size {
+      @case "icon" {
+        <span class="ui-button-icon-label">{label}</span>
+      }
+      @default {
+        {label}
+      }
+    }
   </button>
 }

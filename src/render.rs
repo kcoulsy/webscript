@@ -759,6 +759,32 @@ fn render_nodes(
                     )?);
                 }
             }
+            TemplateNode::Switch {
+                value,
+                cases,
+                default_nodes,
+            } => {
+                let switch_value = evaluate_source_expr(value, &scope)?;
+                let mut matched_nodes = default_nodes;
+                for case in cases {
+                    let case_value = evaluate_source_expr(&case.value, &scope)?;
+                    if case_value == switch_value {
+                        matched_nodes = &case.nodes;
+                        break;
+                    }
+                }
+                html.push_str(&render_nodes(
+                    matched_nodes,
+                    &scope,
+                    components,
+                    runtime,
+                    context,
+                    island,
+                    slot_content,
+                    forward_state,
+                    shadowed_props,
+                )?);
+            }
             TemplateNode::For {
                 item_name,
                 source,
@@ -1106,6 +1132,16 @@ fn template_nodes_have_bind_target(nodes: &[TemplateNode]) -> bool {
             template_nodes_have_bind_target(then_nodes)
                 || template_nodes_have_bind_target(else_nodes)
         }
+        TemplateNode::Switch {
+            cases,
+            default_nodes,
+            ..
+        } => {
+            cases
+                .iter()
+                .any(|case| template_nodes_have_bind_target(&case.nodes))
+                || template_nodes_have_bind_target(default_nodes)
+        }
         TemplateNode::For { body, .. } => template_nodes_have_bind_target(body),
         _ => false,
     })
@@ -1438,6 +1474,38 @@ fn validate_nodes(
                 );
                 validate_nodes(
                     else_nodes,
+                    &scope,
+                    components,
+                    allow_slot,
+                    client_ctx,
+                    models,
+                    diagnostics,
+                );
+            }
+            TemplateNode::Switch {
+                value,
+                cases,
+                default_nodes,
+            } => {
+                if let Err(error) = evaluate_source_expr(value, &scope) {
+                    diagnostics.push(error);
+                }
+                for case in cases {
+                    if let Err(error) = evaluate_source_expr(&case.value, &scope) {
+                        diagnostics.push(error);
+                    }
+                    validate_nodes(
+                        &case.nodes,
+                        &scope,
+                        components,
+                        allow_slot,
+                        client_ctx,
+                        models,
+                        diagnostics,
+                    );
+                }
+                validate_nodes(
+                    default_nodes,
                     &scope,
                     components,
                     allow_slot,

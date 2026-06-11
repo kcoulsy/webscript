@@ -12,5 +12,7 @@
 <section>
   <UI.Input id="demo-name" name="name" placeholder="Ada Lovelace" />
   <UI.Button label="Reset list" variant="destructive" size="sm" @click={reset} />
+  <UI.Button label="Icon action" variant="link" size="icon" />
+  <UI.Button label="Unavailable" disabled=true />
   <p>Clicks: {count}</p>
 </section>

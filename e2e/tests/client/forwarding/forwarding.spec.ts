@@ -32,4 +32,21 @@ test.describe("component forwarded attributes", () => {
     await expect(input).toHaveAttribute("placeholder", "Ada Lovelace");
     await expect(input).not.toHaveAttribute("lovelace", "");
   });
+
+  test("renders elseif and switch branches inside UI.Button", async ({
+    page,
+    workspace,
+  }) => {
+    await open(page, workspace, "/", { hydrate: false });
+
+    const iconButton = page.getByRole("button", { name: "Icon action" });
+    await expect(iconButton).toHaveAttribute("data-variant", "link");
+    await expect(iconButton.locator(".ui-button-icon-label")).toHaveText(
+      "Icon action",
+    );
+
+    const disabledButton = page.getByRole("button", { name: "Unavailable" });
+    await expect(disabledButton).toBeDisabled();
+    await expect(disabledButton).toHaveAttribute("data-variant", "default");
+  });
 });
