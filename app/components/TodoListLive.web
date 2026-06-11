@@ -3,14 +3,16 @@
 }
 
 @client {
+  todos: signal<Todo[]> = initialTodos
   count: signal<int> = 0
-  listHtml: signal<string> = ""
   title: signal<string> = ""
   error: signal<string> = ""
+  empty: signal<bool> = false
 
-  fn applyTodos(todos) {
-    count = todos.length
-    listHtml = WebScript.renderTodos(todos)
+  fn applyTodos(next) {
+    todos = next
+    count = next.length
+    empty = next.length == 0
     error = ""
   }
 
@@ -49,7 +51,18 @@
     <p class="todo-live-error">{error}</p>
   }
 
-  <div class="todo-live-list" data-ws-html="listHtml"></div>
+  @if empty {
+    <p class="todo-empty">No todos yet.</p>
+  }
+
+  <div class="todo-live-list">
+    @for todo in todos {
+      <TodoItem title={todo.title} done={todo.done} />
+      @if !todo.done {
+        <UI.Button label="Mark done" variant="outline" size="sm" @click={completeTodo(todo.id)} />
+      }
+    }
+  </div>
 
   <div class="button-row">
     <UI.Button label="Reset list" variant="destructive" size="sm" @click={resetTodos} />

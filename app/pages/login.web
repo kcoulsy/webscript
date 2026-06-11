@@ -15,25 +15,36 @@
   redirect("/dashboard")
 }
 
-<main>
-  <h1>Log in</h1>
+<main class="auth-page">
+  <div class="auth-card">
+    @if loggedIn {
+      <div class="auth-card-header">
+        <h1>You're signed in</h1>
+        <p>Head to your dashboard to see your account details.</p>
+      </div>
+      <a href="/dashboard" class="auth-link-button">Go to dashboard</a>
+    } @else {
+      <div class="auth-card-header">
+        <h1>Welcome back</h1>
+        <p>Sign in to access your dashboard and demos.</p>
+      </div>
 
-  @if loggedIn {
-    <p>You are already signed in. <a href="/dashboard">Go to dashboard</a></p>
-  } @else {
-    <p>Sign in to access your account.</p>
+      <form method="post" action="/login" class="auth-form">
+        <input type="hidden" name="_action" value="login" />
+        <div>
+          <UI.Label text="Email" target="login-email" />
+          <UI.Input id="login-email" name="email" type="email" placeholder="you@example.com" required=true />
+        </div>
+        <div>
+          <UI.Label text="Password" target="login-password" />
+          <UI.Input id="login-password" name="password" type="password" placeholder="Enter your password" required=true />
+        </div>
+        <UI.Button label="Log in" type="submit" class="auth-submit" />
+      </form>
 
-    <form method="post" action="/login" class="form-stack">
-      <input type="hidden" name="_action" value="login" />
-      <UI.Label text="Email" target="login-email" />
-      <UI.Input id="login-email" name="email" type="email" required=true />
-      <UI.Label text="Password" target="login-password" />
-      <UI.Input id="login-password" name="password" type="password" required=true />
-      <UI.Button label="Log in" type="submit" />
-    </form>
-
-    <p>
-      No account yet? <a href="/register">Create one</a>
-    </p>
-  }
+      <p class="auth-footer">
+        No account yet? <a href="/register">Create one</a>
+      </p>
+    }
+  </div>
 </main>

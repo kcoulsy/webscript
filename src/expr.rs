@@ -26,6 +26,11 @@ pub enum Expr {
         op: BinaryOp,
         right: Box<Expr>,
     },
+    Ternary {
+        condition: Box<Expr>,
+        then_expr: Box<Expr>,
+        else_expr: Box<Expr>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -50,7 +55,7 @@ pub enum BinaryOp {
 pub fn parse(source: &str, line: usize, column: usize) -> Result<Expr, Diagnostic> {
     let tokens = tokenize(source, line, column)?;
     let mut parser = ExprParser { tokens, index: 0 };
-    let expr = parser.parse_or()?;
+    let expr = parser.parse_ternary()?;
 
     if let Some(token) = parser.peek() {
         return Err(Diagnostic::error(
@@ -97,6 +102,20 @@ pub fn evaluate(expr: &Expr, env: &Env, line: usize, column: usize) -> Result<Va
                         &other.type_name(),
                     )),
                 },
+            }
+        }
+        Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let condition = evaluate(condition, env, line, column)?;
+            if condition.as_bool().ok_or_else(|| {
+                type_error(line, column, "ternary condition expects `bool`", &condition.type_name())
+            })? {
+                evaluate(then_expr, env, line, column)
+            } else {
+                evaluate(else_expr, env, line, column)
             }
         }
         Expr::Binary { left, op, right } => {
@@ -407,6 +426,7 @@ enum TokenKind {
     LtEq,
     Gt,
     GtEq,
+    Question,
 }
 
 fn tokenize(source: &str, line: usize, column: usize) -> Result<Vec<Token>, Diagnostic> {
@@ -530,6 +550,7 @@ fn tokenize(source: &str, line: usize, column: usize) -> Result<Vec<Token>, Diag
                 '-' => Some((TokenKind::Minus, 1)),
                 '.' => Some((TokenKind::Dot, 1)),
                 ':' => Some((TokenKind::Colon, 1)),
+                '?' => Some((TokenKind::Question, 1)),
                 ',' => Some((TokenKind::Comma, 1)),
                 '(' => Some((TokenKind::LParen, 1)),
                 ')' => Some((TokenKind::RParen, 1)),
@@ -567,6 +588,25 @@ struct ExprParser {
 }
 
 impl ExprParser {
+    fn parse_ternary(&mut self) -> Result<Expr, Diagnostic> {
+        let mut expr = self.parse_or()?;
+        if self.match_token(TokenKind::Question) {
+            let then_expr = self.parse_or()?;
+            self.expect(
+                TokenKind::Colon,
+                "expected `:` in ternary expression",
+                self.previous_span(),
+            )?;
+            let else_expr = self.parse_ternary()?;
+            expr = Expr::Ternary {
+                condition: Box::new(expr),
+                then_expr: Box::new(then_expr),
+                else_expr: Box::new(else_expr),
+            };
+        }
+        Ok(expr)
+    }
+
     fn parse_or(&mut self) -> Result<Expr, Diagnostic> {
         self.parse_binary(Self::parse_and, &[TokenKind::OrOr])
     }

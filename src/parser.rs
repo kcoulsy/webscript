@@ -922,14 +922,35 @@ fn parse_client_signal(line: &str, line_number: usize) -> Result<ClientSignalDec
         ));
     };
     let inner_type = inner_type.trim();
-    if inner_type != "int" && inner_type != "bool" && inner_type != "string" {
+    let is_array_type = inner_type.ends_with("[]");
+    if inner_type != "int"
+        && inner_type != "bool"
+        && inner_type != "string"
+        && !is_array_type
+    {
         return Err(parse_diagnostic_line(
             line_number,
-            format!("unsupported signal type `{inner_type}`; use int, bool, or string"),
+            format!(
+                "unsupported signal type `{inner_type}`; use int, bool, string, or array types like Todo[]"
+            ),
         ));
     }
 
-    let initial = if initial_source.starts_with('"') || initial_source.starts_with('\'') {
+    let initial = if initial_source.starts_with('[') {
+        if !is_array_type {
+            return Err(parse_diagnostic_line(
+                line_number,
+                "array literals require an array signal type such as signal<Todo[]>",
+            ));
+        }
+        ClientInitial::Literal(parse_value(
+            inner_type.trim_end_matches("[]"),
+            initial_source,
+            line_number,
+            1,
+            initial_source.len(),
+        )?)
+    } else if initial_source.starts_with('"') || initial_source.starts_with('\'') {
         ClientInitial::Literal(parse_value(
             inner_type,
             initial_source,
@@ -2206,6 +2227,44 @@ fn parse_text_line(line: &str, line_number: usize) -> Result<Vec<TemplateNode>, 
     Ok(nodes)
 }
 
+fn find_expression_end(line: &str, expr_start: usize) -> Option<usize> {
+    let mut depth = 1usize;
+    let mut in_string = None::<char>;
+    let mut escaped = false;
+
+    for (index, ch) in line[expr_start..].char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+
+        if in_string.is_some() {
+            if ch == '\\' {
+                escaped = true;
+                continue;
+            }
+            if Some(ch) == in_string {
+                in_string = None;
+            }
+            continue;
+        }
+
+        match ch {
+            '"' | '\'' => in_string = Some(ch),
+            '{' => depth += 1,
+            '}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(expr_start + index);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    None
+}
+
 fn parse_text_expressions(line: &str, line_number: usize) -> Result<Vec<TemplateNode>, Diagnostic> {
     let mut nodes = Vec::new();
     let mut offset = 0;
@@ -2217,12 +2276,12 @@ fn parse_text_expressions(line: &str, line_number: usize) -> Result<Vec<Template
         }
 
         let expr_start = absolute_start + 1;
-        let Some(end) = line[expr_start..].find('}') else {
+        let Some(end) = find_expression_end(line, expr_start) else {
             nodes.push(TemplateNode::Text(line[absolute_start..].to_string()));
             return Ok(nodes);
         };
 
-        let expr_end = expr_start + end;
+        let expr_end = end;
         let source = line[expr_start..expr_end].trim();
         let column = line[expr_start..expr_end]
             .find(source)
@@ -2685,8 +2744,7 @@ mod tests {
         ));
         assert!(matches!(
             &parsed.lets[1].value,
-            LetValue::Expr(expr::Expr::Literal(Value::Array { element_type, values }))
-                if element_type == "object" && values.len() == 2
+            LetValue::Expr(expr::Expr::Array(values)) if values.len() == 2
         ));
     }
 

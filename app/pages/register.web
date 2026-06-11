@@ -20,27 +20,40 @@
   redirect("/dashboard")
 }
 
-<main>
-  <h1>Create account</h1>
+<main class="auth-page">
+  <div class="auth-card">
+    @if loggedIn {
+      <div class="auth-card-header">
+        <h1>You're signed in</h1>
+        <p>Head to your dashboard to see your account details.</p>
+      </div>
+      <a href="/dashboard" class="auth-link-button">Go to dashboard</a>
+    } @else {
+      <div class="auth-card-header">
+        <h1>Create your account</h1>
+        <p>Get started with WebScript in seconds.</p>
+      </div>
 
-  @if loggedIn {
-    <p>You are already signed in. <a href="/dashboard">Go to dashboard</a></p>
-  } @else {
-    <p>Register to get started.</p>
+      <form method="post" action="/register" class="auth-form">
+        <input type="hidden" name="_action" value="register" />
+        <div>
+          <UI.Label text="Name" target="register-name" />
+          <UI.Input id="register-name" name="name" placeholder="Ada Lovelace" required=true />
+        </div>
+        <div>
+          <UI.Label text="Email" target="register-email" />
+          <UI.Input id="register-email" name="email" type="email" placeholder="you@example.com" required=true />
+        </div>
+        <div>
+          <UI.Label text="Password" target="register-password" />
+          <UI.Input id="register-password" name="password" type="password" placeholder="Choose a password" required=true />
+        </div>
+        <UI.Button label="Create account" type="submit" class="auth-submit" />
+      </form>
 
-    <form method="post" action="/register" class="form-stack">
-      <input type="hidden" name="_action" value="register" />
-      <UI.Label text="Name" target="register-name" />
-      <UI.Input id="register-name" name="name" required=true />
-      <UI.Label text="Email" target="register-email" />
-      <UI.Input id="register-email" name="email" type="email" required=true />
-      <UI.Label text="Password" target="register-password" />
-      <UI.Input id="register-password" name="password" type="password" required=true />
-      <UI.Button label="Create account" type="submit" />
-    </form>
-
-    <p>
-      Already have an account? <a href="/login">Log in</a>
-    </p>
-  }
+      <p class="auth-footer">
+        Already have an account? <a href="/login">Log in</a>
+      </p>
+    }
+  </div>
 </main>

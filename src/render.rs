@@ -1,7 +1,9 @@
 use crate::client::{
-    build_event_handler, compile_handler_body, handler_body_is_async, index_event_attributes,
-    js_literal, resolve_signal_initial, value_signal_from_field_handler, HandlerCompileContext,
-    IfBinding, IslandManifest, NamedHandler, SignalBinding, TextBinding, ValueBinding,
+    build_event_handler, compile_attribute_expression, compile_for_body_js, compile_handler_body,
+    handler_body_is_async, index_event_attributes, is_array_signal_type,
+    resolve_signal_initial, signal_refs_in_source, value_signal_from_field_handler,
+    AttrBinding, ForBinding, HandlerCompileContext, IfBinding, IslandManifest, NamedHandler,
+    SignalBinding, TextBinding, ValueBinding,
 };
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
@@ -1147,6 +1149,52 @@ fn render_nodes(
                     return Err(for_source_not_array(source));
                 };
 
+                if let Some(island_state) = island.as_deref_mut() {
+                    if let Some(signal_name) = signal_expr_name(&source.expr) {
+                        if island_state.signal_names.contains(signal_name)
+                            && island_state
+                                .signal_types
+                                .get(signal_name)
+                                .is_some_and(|type_name| is_array_signal_type(type_name))
+                        {
+                            let js_fn_body = compile_for_body_js(
+                                body,
+                                item_name,
+                                components,
+                                &island_state.handler_names,
+                                source.line,
+                            )?;
+                            island_state.manifest.for_bindings.push(ForBinding {
+                                signal: signal_name.to_string(),
+                                item_name: item_name.clone(),
+                                js_fn_body,
+                            });
+
+                            let mut loop_html = String::new();
+                            for item in items.to_vec() {
+                                let mut loop_scope = scope.clone();
+                                loop_scope.insert(item_name.clone(), item);
+                                loop_html.push_str(&render_nodes(
+                                    body,
+                                    &loop_scope,
+                                    components,
+                                    runtime,
+                                    context,
+                                    island,
+                                    slot_content,
+                                    forward_state,
+                                    shadowed_props,
+                                    defer_state,
+                                )?);
+                            }
+                            html.push_str(&format!(
+                                "<div data-ws-for=\"{signal_name}\">{loop_html}</div>"
+                            ));
+                            continue;
+                        }
+                    }
+                }
+
                 for item in items.to_vec() {
                     let mut loop_scope = scope.clone();
                     loop_scope.insert(item_name.clone(), item);
@@ -1245,17 +1293,31 @@ fn render_expr(
                     .map(String::as_str)
                     .unwrap_or("string");
 
-                if attr_context.is_some() {
-                    if !island
-                        .manifest
-                        .value_bindings
-                        .iter()
-                        .any(|binding| binding.signal == signal_name)
-                    {
-                        island.manifest.value_bindings.push(ValueBinding {
-                            signal: signal_name.to_string(),
-                            handler_index: 0,
+                if let Some(attr_name) = attr_context.as_ref() {
+                    if *attr_name == "value" {
+                        if !island
+                            .manifest
+                            .value_bindings
+                            .iter()
+                            .any(|binding| binding.signal == signal_name)
+                        {
+                            island.manifest.value_bindings.push(ValueBinding {
+                                signal: signal_name.to_string(),
+                                handler_index: 0,
+                            });
+                        }
+                    } else {
+                        let index = island.manifest.attr_bindings.len();
+                        island.manifest.attr_bindings.push(AttrBinding {
+                            attribute: (*attr_name).to_string(),
+                            index,
+                            js_expr: format!("signals.{signal_name}.get()"),
+                            signals: vec![signal_name.to_string()],
                         });
+                        return Ok(format!(
+                            "\"{}\" data-ws-attr-{attr_name}=\"{index}\"",
+                            escape_html(&value.render())
+                        ));
                     }
                     return Ok(quoted_attr_value(&value.render()));
                 }
@@ -1289,6 +1351,45 @@ fn render_expr(
                 }
                 return Ok(format!(
                     "<span data-ws-text=\"{signal_name}\">{}</span>",
+                    escape_html(&value.render())
+                ));
+            }
+        }
+    }
+
+    if let Some(attr_name) = attr_context.as_ref() {
+        if let Some(island) = island.as_deref_mut() {
+            if signal_refs_in_source(&expr.source, &island.signal_names)
+                .into_iter()
+                .any(|name| island.signal_names.contains(&name))
+            {
+                let empty_locals = BTreeSet::new();
+                let handler_ctx = HandlerCompileContext {
+                    signals: &island.signal_names,
+                    handlers: &island.handler_names,
+                    locals: &empty_locals,
+                    page_actions: island.page_actions,
+                    action_url: island.action_url,
+                    param: "event",
+                    is_submit_context: false,
+                };
+                let js_expr = compile_attribute_expression(
+                    &expr.source,
+                    &handler_ctx,
+                    expr.line,
+                    expr.column,
+                )?;
+                let index = island.manifest.attr_bindings.len();
+                let signals = signal_refs_in_source(&expr.source, &island.signal_names);
+                island.manifest.attr_bindings.push(AttrBinding {
+                    attribute: attr_name.to_string(),
+                    index,
+                    js_expr,
+                    signals,
+                });
+                let value = evaluate_source_expr(expr, scope)?;
+                return Ok(format!(
+                    "\"{}\" data-ws-attr-{attr_name}=\"{index}\"",
                     escape_html(&value.render())
                 ));
             }
@@ -1457,9 +1558,11 @@ fn register_event_binding(
         .entry(binding.event.clone())
         .or_insert(0);
     island.event_counts.insert(binding.event.clone(), index + 1);
+    let empty_locals = BTreeSet::new();
     let compile_ctx = HandlerCompileContext {
         signals: &island.signal_names,
         handlers: &island.handler_names,
+        locals: &empty_locals,
         page_actions: island.page_actions,
         action_url: island.action_url,
         param: "event",
@@ -1652,8 +1755,24 @@ fn render_client_component(
     let mut signal_names = BTreeSet::new();
     let mut signal_types = BTreeMap::new();
 
+    let mut resolved_signals = BTreeMap::new();
     for signal in &client.signals {
         let initial = resolve_signal_initial(signal, component_scope)?;
+        resolved_signals.insert(signal.name.clone(), initial);
+    }
+    if let Some(Value::Array { values, .. }) = resolved_signals.get("todos").cloned() {
+        if resolved_signals.contains_key("count") {
+            resolved_signals.insert("count".to_string(), Value::Int(values.len() as i64));
+        }
+        if resolved_signals.contains_key("empty") {
+            resolved_signals.insert("empty".to_string(), Value::Bool(values.is_empty()));
+        }
+    }
+    for signal in &client.signals {
+        let initial = resolved_signals
+            .get(&signal.name)
+            .cloned()
+            .expect("signal resolved");
         signal_names.insert(signal.name.clone());
         signal_types.insert(signal.name.clone(), signal.type_name.clone());
         signal_bindings.push(SignalBinding {
@@ -1673,9 +1792,11 @@ fn render_client_component(
     let page_actions = context.page_actions.clone();
     let mut named_handlers = Vec::new();
     for handler in &client.handlers {
+        let empty_locals = BTreeSet::new();
         let handler_ctx = HandlerCompileContext {
             signals: &signal_names,
             handlers: &handler_names,
+            locals: &empty_locals,
             page_actions: &page_actions,
             action_url: &page_route,
             param: handler.param_name.as_deref().unwrap_or("event"),
@@ -1690,11 +1811,6 @@ fn render_client_component(
         });
     }
 
-    let bootstrap = component_scope
-        .get("initialTodos")
-        .filter(|_| handler_names.contains("applyTodos"))
-        .map(|value| format!("handlers.applyTodos({})", js_literal(value)));
-
     let mut manifest = IslandManifest {
         id: island_id.clone(),
         component: call.name.clone(),
@@ -1706,7 +1822,9 @@ fn render_client_component(
         value_bindings: Vec::new(),
         html_bindings: Vec::new(),
         if_bindings: Vec::new(),
-        bootstrap,
+        attr_bindings: Vec::new(),
+        for_bindings: Vec::new(),
+        bootstrap: None,
     };
 
     let mut island_state = IslandBuildState {
@@ -1960,9 +2078,11 @@ fn validate_nodes(
                     None => (&empty_signals, &empty_handlers),
                 };
                 let empty_actions = BTreeMap::new();
+                let empty_locals = BTreeSet::new();
                 let compile_ctx = HandlerCompileContext {
                     signals,
                     handlers,
+                    locals: &empty_locals,
                     page_actions: &empty_actions,
                     action_url: "/",
                     param: "event",
@@ -2088,9 +2208,11 @@ fn validate_component_call(
     } else if !call.event_bindings.is_empty() {
         let ctx = client_ctx.expect("client context checked");
         let empty_actions = BTreeMap::new();
+        let empty_locals = BTreeSet::new();
         let compile_ctx = HandlerCompileContext {
             signals: &ctx.signals,
             handlers: &ctx.handlers,
+            locals: &empty_locals,
             page_actions: &empty_actions,
             action_url: "/",
             param: "event",
@@ -2301,6 +2423,15 @@ fn expr_contains_await(expression: &expr::Expr) -> bool {
         }
         expr::Expr::Literal(_) | expr::Expr::Path(_) => false,
         expr::Expr::Array(elements) => elements.iter().any(expr_contains_await),
+        expr::Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            expr_contains_await(condition)
+                || expr_contains_await(then_expr)
+                || expr_contains_await(else_expr)
+        }
     }
 }
 
@@ -2389,34 +2520,348 @@ mod tests {
     use crate::runtime::WebRuntime;
     use std::collections::BTreeMap;
 
-    fn register_ui_primitives(components: &mut ComponentRegistry) {
-        let primitives = [
-            ("UI.Button", include_str!("../app/components/UI/Button.web")),
-            ("UI.Input", include_str!("../app/components/UI/Input.web")),
-            ("UI.Label", include_str!("../app/components/UI/Label.web")),
-            ("UI.Card", include_str!("../app/components/UI/Card.web")),
-            (
-                "UI.Separator",
-                include_str!("../app/components/UI/Separator.web"),
-            ),
-        ];
-        for (name, source) in primitives {
-            let file = parse(source).expect("ui primitive");
-            components.insert(name.to_string(), file);
-        }
-    }
+    mod fixtures {
+        use super::*;
 
-    fn with_ui_primitives(component: WebFile) -> ComponentRegistry {
-        let mut components = ComponentRegistry::new();
-        register_ui_primitives(&mut components);
-        let name = component
-            .component
-            .as_ref()
-            .expect("component declaration")
-            .name
-            .clone();
-        components.insert(name, component);
-        components
+        pub const UI_BUTTON: &str = r#"@component UI.Button {
+  label: string
+  variant: string = "default"
+  size: string = "default"
+  type: string = "button"
+  disabled: bool = false
+  class: string = ""
+}
+
+<button type={type} class={"ui-button " + class} data-variant={variant} data-size={size} data-ws-bind>
+  {label}
+</button>
+
+@style {
+  .ui-button { padding: 0.5rem; }
+}"#;
+
+        pub const UI_INPUT: &str = r#"@component UI.Input {
+  id: string = ""
+  name: string = ""
+  value: string = ""
+  placeholder: string = ""
+  type: string = "text"
+  disabled: bool = false
+  required: bool = false
+  class: string = ""
+}
+
+<input
+  class={"ui-input " + class}
+  id={id}
+  name={name}
+  value={value}
+  placeholder={placeholder}
+  type={type}
+  data-ws-bind
+/>
+
+@style {
+  .ui-input { display: block; }
+}"#;
+
+        pub const UI_PASSWORD_INPUT: &str = r#"@component UI.PasswordInput {
+  id: string = ""
+  name: string = ""
+  value: string = ""
+  placeholder: string = ""
+  required: bool = false
+  class: string = ""
+}
+
+@client {
+  visible: signal<bool> = false
+}
+
+<div class="ui-input-wrap">
+  <input
+    class={"ui-input ui-input-with-toggle " + class}
+    id={id}
+    name={name}
+    value={value}
+    placeholder={placeholder}
+    type={visible ? "text" : "password"}
+    data-ws-bind
+    required
+  />
+  <button
+    type="button"
+    class="ui-input-toggle"
+    @click={visible = !visible}
+    aria-label={visible ? "Hide password" : "Show password"}
+    aria-pressed={visible}
+  >
+    @if visible {
+      <span>hide</span>
+    } @else {
+      <span>show</span>
+    }
+  </button>
+</div>"#;
+
+        pub const UI_LABEL: &str = r#"@component UI.Label {
+  text: string
+  target: string = ""
+}
+
+<label for={target}>{text}</label>"#;
+
+        pub const UI_BADGE: &str = r#"@component UI.Badge {
+  text: string
+  variant: string = "default"
+}
+
+<span class="ui-badge" data-variant={variant}>{text}</span>"#;
+
+        pub const UI_CARD: &str = r#"@component UI.Card {
+  title: string
+  content: string = ""
+}
+
+<div class="ui-card">
+  <h2>{title}</h2>
+  <p>{content}</p>
+</div>"#;
+
+        pub const UI_SEPARATOR: &str = r#"@component UI.Separator {}
+
+<hr class="ui-separator" />"#;
+
+        pub const COUNTER: &str = r#"@component Counter {
+  initial: int = 0
+  label: string = "Count"
+}
+
+@client {
+  count: signal<int> = initial
+}
+
+<div class="counter">
+  <p class="counter-label">{label}: <strong>{count}</strong></p>
+  <div class="button-row">
+    <UI.Button label="+" variant="outline" size="sm" @click={count++} />
+    <UI.Button label="-" variant="outline" size="sm" @click={count--} />
+    <UI.Button label="Reset" variant="ghost" size="sm" @click={count = 0} />
+  </div>
+</div>
+
+@style {
+  .counter { border: 1px solid #ccc; padding: 1rem; }
+}"#;
+
+        pub const DETAILS: &str = r#"@component Details {
+  title: string = "Details"
+}
+
+@client {
+  open: signal<bool> = false
+}
+
+<section class="details">
+  @if open {
+    <UI.Button label={"Hide " + title} variant="outline" size="sm" @click={open = !open} />
+  } @else {
+    <UI.Button label={"Show " + title} variant="outline" size="sm" @click={open = !open} />
+  }
+
+  @if open {
+    <div class="details-panel">
+      <UI.Card title={title} content="Panel content." />
+    </div>
+  }
+</section>"#;
+
+        pub const GREETING: &str = r#"@component Greeting {
+  placeholder: string = "Your name"
+}
+
+@client {
+  name: signal<string> = ""
+}
+
+<div class="greeting">
+  <UI.Label text="Name" target="greeting-name" />
+  <UI.Input
+    id="greeting-name"
+    value={name}
+    placeholder={placeholder}
+    @input={|event| name = event.target.value}
+  />
+  <p class="greeting-output">Hello, {name}!</p>
+</div>"#;
+
+        pub const EVENT_DEMO: &str = r#"@component EventDemo {}
+
+@client {
+  note: signal<string> = ""
+  status: signal<string> = "idle"
+  submitted: signal<bool> = false
+  keyCount: signal<int> = 0
+
+  fn save() {
+    submitted = true
+    status = "Saved: " + note
+  }
+}
+
+<div class="event-demo">
+  <form @submit.prevent={|event| save()} class="form-stack">
+    <UI.Label text="Note" target="event-note" />
+    <UI.Input id="event-note" name="note" value={note} @change={|event| note = event.target.value} />
+    <UI.Button label="Save" type="submit" />
+  </form>
+
+  @if submitted {
+    <p class="event-success">{status}</p>
+  }
+
+  <UI.Separator />
+
+  <UI.Label text="Keys" target="event-keys" />
+  <UI.Input id="event-keys" @keydown={|event| { keyCount = keyCount + 1; event.key == "Enter" && save() }} />
+  <p class="event-meta">Keys pressed: {keyCount}</p>
+</div>"#;
+
+        pub const TODO_ITEM: &str = r#"@component TodoItem {
+  title: string
+  done: bool = false
+}
+
+<article class="todo-item">
+  @if done {
+    <UI.Badge text="Done" variant="secondary" />
+  } @else {
+    <UI.Badge text="Next" variant="outline" />
+  }
+  <p>{title}</p>
+</article>"#;
+
+        pub const TODO_LIST_LIVE: &str = r#"@component TodoListLive {
+  initialTodos: Todo[] = []
+}
+
+@client {
+  todos: signal<Todo[]> = initialTodos
+  count: signal<int> = 0
+  title: signal<string> = ""
+  error: signal<string> = ""
+  empty: signal<bool> = false
+
+  fn applyTodos(next) {
+    todos = next
+    count = next.length
+    empty = next.length == 0
+    error = ""
+  }
+
+  fn addTodo() {
+    let todos = await action('addTodo', { title: title })
+    applyTodos(todos)
+    title = ""
+  }
+
+  fn completeTodo(id) {
+    let todos = await action('completeTodo', { id: id })
+    applyTodos(todos)
+  }
+
+  fn resetTodos() {
+    let todos = await action('resetTodos')
+    applyTodos(todos)
+  }
+}
+
+<div class="todo-live">
+  <form @submit.prevent={addTodo} class="form-stack">
+    <UI.Label text="New todo" target="live-todo-title" />
+    <UI.Input
+      id="live-todo-title"
+      name="title"
+      value={title}
+      @input={|event| title = event.target.value}
+    />
+    <UI.Button label="Add todo" type="submit" />
+  </form>
+
+  <p class="todo-live-meta">{count} todo(s)</p>
+
+  <div class="todo-live-list">
+    @for todo in todos {
+      <TodoItem title={todo.title} done={todo.done} />
+      @if !todo.done {
+        <UI.Button
+          label="Mark done"
+          variant="outline"
+          size="sm"
+          @click={completeTodo(todo.id)}
+        />
+      }
+    }
+  </div>
+
+  <UI.Button label="Reset list" variant="destructive" size="sm" @click={resetTodos} />
+</div>"#;
+
+        pub const APP_LAYOUT: &str = r#"@layout AppLayout {
+}
+
+<div class="app-layout">
+  <slot />
+</div>"#;
+
+        pub const FETCH_DEMO_PAGE: &str = r#"@page "/fetch-demo"
+
+@load {
+  title: string = ""
+  completed: bool = false
+  error: string = ""
+
+  try {
+    todo: JsonPlaceholderTodo = await fetch("https://jsonplaceholder.typicode.com/todos/1", JsonPlaceholderTodo)
+    title = todo.title
+    completed = todo.completed
+  } catch err {
+    error = err.message
+  }
+}
+
+<main>
+  <h1>Fetch demo</h1>
+  <p>Title: {title}</p>
+  <p>Completed: {completed}</p>
+  <p>Error: {error}</p>
+</main>"#;
+
+        fn parse_fixture(source: &str) -> WebFile {
+            parse(source).expect("fixture")
+        }
+
+        pub fn minimal_ui_registry() -> ComponentRegistry {
+            let mut components = ComponentRegistry::new();
+            for (name, source) in [
+                ("UI.Button", UI_BUTTON),
+                ("UI.Input", UI_INPUT),
+                ("UI.PasswordInput", UI_PASSWORD_INPUT),
+                ("UI.Label", UI_LABEL),
+                ("UI.Badge", UI_BADGE),
+                ("UI.Card", UI_CARD),
+                ("UI.Separator", UI_SEPARATOR),
+            ] {
+                components.insert(name.to_string(), parse_fixture(source));
+            }
+            components
+        }
+
+        pub fn registry_with(component_name: &str, source: &str) -> ComponentRegistry {
+            let mut components = minimal_ui_registry();
+            components.insert(component_name.to_string(), parse_fixture(source));
+            components
+        }
     }
 
     #[test]
@@ -2439,12 +2884,11 @@ mod tests {
 
     #[test]
     fn quotes_expression_attribute_values() {
-        let input = parse(include_str!("../app/components/UI/Input.web")).expect("input");
         let page = parse(
             "@page \"/\"\n\n@let name = \"Ada Lovelace\"\n\n<UI.Input name=\"name\" placeholder={name} />",
         )
         .expect("page");
-        let components = with_ui_primitives(input);
+        let components = fixtures::minimal_ui_registry();
 
         let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
             .expect("rendered");
@@ -2455,12 +2899,11 @@ mod tests {
 
     #[test]
     fn validates_nested_bind_targets_for_forwarded_events() {
-        let button = parse(include_str!("../app/components/UI/Button.web")).expect("button");
         let page = parse(
             "@page \"/\"\n\n@client {\n  count: signal<int> = 0\n  fn reset() {\n    count = 0\n  }\n}\n\n<UI.Button label=\"Reset\" @click={reset} />",
         )
         .expect("page");
-        let components = with_ui_primitives(button);
+        let components = fixtures::minimal_ui_registry();
 
         let diagnostics = validate_with_components(
             &page,
@@ -2666,7 +3109,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires network access to jsonplaceholder.typicode.com"]
     async fn fetch_demo_fetches_json_with_schema() {
-        let file = parse(include_str!("../app/pages/fetch-demo.web")).expect("valid page");
+        let file = parse(fixtures::FETCH_DEMO_PAGE).expect("valid page");
         let root = std::env::current_dir().expect("cwd");
         let runtime = WebRuntime::with_database(root).expect("runtime");
         let output = super::render_with_components_async(
@@ -2699,10 +3142,9 @@ mod tests {
 
     #[test]
     fn renders_client_counter_island() {
-        let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
         let page =
             parse("@page \"/counter\"\n\n<Counter initial={5} label=\"Score\" />").expect("page");
-        let components = with_ui_primitives(counter);
+        let components = fixtures::registry_with("Counter", fixtures::COUNTER);
 
         let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
             .expect("rendered");
@@ -2730,9 +3172,8 @@ mod tests {
 
     #[test]
     fn renders_client_details_toggle_island() {
-        let details = parse(include_str!("../app/components/Details.web")).expect("details");
         let page = parse("@page \"/\"\n\n<Details title=\"Notes\" />").expect("page");
-        let components = with_ui_primitives(details);
+        let components = fixtures::registry_with("Details", fixtures::DETAILS);
 
         let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
             .expect("rendered");
@@ -2745,10 +3186,90 @@ mod tests {
     }
 
     #[test]
+    fn renders_password_input_attr_bindings() {
+        let page = parse(
+            "@page \"/login\"\n\n<UI.PasswordInput id=\"pw\" name=\"password\" required=true />",
+        )
+        .expect("page");
+        let components = fixtures::minimal_ui_registry();
+
+        let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
+            .expect("rendered");
+
+        assert!(
+            output.html.contains("data-ws-attr-type="),
+            "html: {}",
+            output.html
+        );
+        assert!(output.html.contains("data-ws-if=\"visible\""));
+        assert_eq!(output.islands[0].attr_bindings.len(), 3);
+        let script = crate::client::render_island_script(&output.islands[0]);
+        assert!(script.contains("update_attr_type_"));
+        assert!(script.contains("signals.visible.get()"));
+    }
+
+    #[test]
+    fn renders_todo_list_live_reactive_for() {
+        let page = parse(
+            r#"@page "/todos/live"
+
+@action addTodo(input: AddTodoInput) {
+  return []
+}
+
+@action completeTodo(input: CompleteTodoInput) {
+  return []
+}
+
+@action resetTodos {
+  return []
+}
+
+<TodoListLive initialTodos={todos} />"#,
+        )
+        .expect("page");
+        let mut components = fixtures::minimal_ui_registry();
+        components.insert(
+            "TodoListLive".to_string(),
+            parse(fixtures::TODO_LIST_LIVE).expect("todo list fixture"),
+        );
+        components.insert(
+            "TodoItem".to_string(),
+            parse(fixtures::TODO_ITEM).expect("todo item fixture"),
+        );
+
+        let mut scope = Scope::new();
+        scope.insert(
+            "todos".to_string(),
+            crate::parser::Value::Array {
+                element_type: "Todo".to_string(),
+                values: Vec::new(),
+            },
+        );
+
+        let output = render_with_components(&page, &scope, &components, &WebRuntime::new())
+            .expect("rendered");
+
+        assert!(output.html.contains("data-ws-for=\"todos\""));
+        assert_eq!(output.islands[0].for_bindings.len(), 1);
+        let script = crate::client::render_island_script(&output.islands[0]);
+        assert!(script.contains("renderFor_todos"));
+        assert!(script.contains("update_for_todos"));
+        assert!(!script.contains("renderTodos"));
+        assert!(
+            script.contains("handlers.applyTodos(todos)"),
+            "action result should be passed to applyTodos: {script}"
+        );
+        assert!(
+            !script.contains("ui-badge-secondary"),
+            "reactive @for must compile components generically, not hardcode TodoItem HTML"
+        );
+    }
+
+    #[test]
     fn renders_client_greeting_input_island() {
-        let greeting = parse(include_str!("../app/components/Greeting.web")).expect("greeting");
         let page = parse("@page \"/\"\n\n<Greeting />").expect("page");
-        let components = with_ui_primitives(greeting);
+        let components = fixtures::registry_with("Greeting", fixtures::GREETING);
 
         let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
             .expect("rendered");
@@ -2780,9 +3301,8 @@ mod tests {
 
     #[test]
     fn renders_event_demo_submit_prevent() {
-        let demo = parse(include_str!("../app/components/EventDemo.web")).expect("event demo");
         let page = parse("@page \"/\"\n\n<EventDemo />").expect("page");
-        let components = with_ui_primitives(demo);
+        let components = fixtures::registry_with("EventDemo", fixtures::EVENT_DEMO);
 
         let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
             .expect("rendered");
@@ -2834,7 +3354,7 @@ mod tests {
 
     #[tokio::test]
     async fn wraps_page_content_in_layout_slot() {
-        let layout = parse(include_str!("../app/layouts/AppLayout.web")).expect("layout");
+        let layout = parse(fixtures::APP_LAYOUT).expect("layout");
         let page = parse("@page \"/\"\n\n<main><h1>Hello</h1></main>").expect("page");
         let mut layouts = super::LayoutRegistry::new();
         layouts.insert("AppLayout".to_string(), layout);
@@ -2857,10 +3377,9 @@ mod tests {
 
     #[test]
     fn renders_scoped_component_styles() {
-        let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
         let page =
             parse("@page \"/counter\"\n\n<Counter initial={5} label=\"Score\" />").expect("page");
-        let components = with_ui_primitives(counter);
+        let components = fixtures::registry_with("Counter", fixtures::COUNTER);
 
         let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
             .expect("rendered");
@@ -2896,10 +3415,9 @@ mod tests {
 
     #[test]
     fn dedupes_scoped_styles_for_multiple_component_instances() {
-        let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
         let page = parse("@page \"/counter\"\n\n<Counter initial={1} />\n<Counter initial={2} />")
             .expect("page");
-        let components = with_ui_primitives(counter);
+        let components = fixtures::registry_with("Counter", fixtures::COUNTER);
 
         let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
             .expect("rendered");

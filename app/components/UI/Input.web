@@ -9,7 +9,17 @@
   class: string = ""
 }
 
-@if disabled {
+@if type == "password" {
+  <UI.PasswordInput
+    id={id}
+    name={name}
+    value={value}
+    placeholder={placeholder}
+    disabled={disabled}
+    required={required}
+    class={class}
+  />
+} @else if disabled {
   @if id != "" {
     <input
       class={"ui-input " + class}

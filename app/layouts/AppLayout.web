@@ -1,26 +1,36 @@
 @layout AppLayout {
 }
 
-<header class="app-layout bg-red-500" data-ws-nav-region>
-  <nav aria-label="Main">
-    <a href="/">Home</a>
-    <a href="/todos">Todos</a>
-    <a href="/todos/live">Live todos</a>
-    <a href="/ui">UI</a>
-    <a href="/counter">Counter</a>
-    <a href="/async-demo">Async demo</a>
-    <a href="/fetch-demo">Fetch demo</a>
-    <a href="/posts/intro">Posts</a>
-    @if session.userId != 0 {
-      <a href="/dashboard">Dashboard</a>
-      <form method="post" action="/dashboard" class="nav-logout">
-        <input type="hidden" name="_action" value="logout" />
-        <button type="submit" class="nav-logout-button">Log out</button>
-      </form>
-    } @else {
-      <a href="/login">Login</a>
-      <a href="/register">Register</a>
-    }
+<header class="app-layout" data-ws-nav-region>
+  <nav aria-label="Main" class="nav-bar">
+    <div class="nav-start">
+      <a href="/" class="nav-brand">WebScript</a>
+      <details class="nav-dropdown">
+        <summary>Demos</summary>
+        <div class="nav-dropdown-menu" role="menu">
+          <a href="/counter" role="menuitem">Counter</a>
+          <a href="/ui" role="menuitem">UI</a>
+          <a href="/async-demo" role="menuitem">Async demo</a>
+          <a href="/fetch-demo" role="menuitem">Fetch demo</a>
+          <a href="/defer-demo" role="menuitem">Defer demo</a>
+          <a href="/todos" role="menuitem">Todos</a>
+          <a href="/todos/live" role="menuitem">Live todos</a>
+          <a href="/posts/intro" role="menuitem">Posts</a>
+        </div>
+      </details>
+    </div>
+    <div class="nav-end">
+      @if session.userId != 0 {
+        <a href="/dashboard">Dashboard</a>
+        <form method="post" action="/dashboard" class="nav-logout">
+          <input type="hidden" name="_action" value="logout" />
+          <button type="submit" class="nav-logout-button">Log out</button>
+        </form>
+      } @else {
+        <a href="/login">Login</a>
+        <a href="/register">Register</a>
+      }
+    </div>
   </nav>
 </header>
 
@@ -63,16 +73,30 @@
   }
 
   .app-layout {
+    background: var(--ui-background);
     border-bottom: 1px solid var(--ui-border);
     padding: 0.75rem 1.5rem;
   }
 
-  .app-layout nav {
+  .nav-bar {
     display: flex;
-    flex-wrap: wrap;
-    gap: 1rem;
+    align-items: center;
+    gap: 1.5rem;
     max-width: 56rem;
     margin: 0 auto;
+  }
+
+  .nav-start {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .nav-end {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
   }
 
   .app-layout a {
@@ -84,6 +108,75 @@
 
   .app-layout a:hover {
     color: var(--ui-primary);
+  }
+
+  .nav-brand {
+    font-weight: 600;
+    font-size: 0.9375rem;
+    letter-spacing: -0.01em;
+  }
+
+  .nav-dropdown {
+    position: relative;
+  }
+
+  .nav-dropdown summary {
+    list-style: none;
+    cursor: pointer;
+    color: var(--ui-foreground);
+    font-size: 0.875rem;
+    font-weight: 500;
+    display: flex;
+    align-items: center;
+    gap: 0.25rem;
+    user-select: none;
+  }
+
+  .nav-dropdown summary::-webkit-details-marker {
+    display: none;
+  }
+
+  .nav-dropdown summary::after {
+    content: "";
+    width: 0.4rem;
+    height: 0.4rem;
+    border-right: 1.5px solid currentColor;
+    border-bottom: 1.5px solid currentColor;
+    transform: rotate(45deg) translateY(-1px);
+    transition: transform 150ms ease;
+  }
+
+  .nav-dropdown[open] summary::after {
+    transform: rotate(-135deg) translateY(1px);
+  }
+
+  .nav-dropdown summary:hover {
+    color: var(--ui-primary);
+  }
+
+  .nav-dropdown-menu {
+    position: absolute;
+    top: calc(100% + 0.375rem);
+    left: 0;
+    min-width: 10rem;
+    padding: 0.25rem;
+    background: var(--ui-card);
+    border: 1px solid var(--ui-border);
+    border-radius: var(--ui-radius);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+    z-index: 50;
+  }
+
+  .nav-dropdown-menu a {
+    display: block;
+    padding: 0.5rem 0.75rem;
+    border-radius: calc(var(--ui-radius) - 2px);
+    color: var(--ui-foreground);
+  }
+
+  .nav-dropdown-menu a:hover {
+    background: var(--ui-accent);
+    color: var(--ui-accent-foreground);
   }
 
   .nav-logout {
@@ -119,5 +212,88 @@
     flex-wrap: wrap;
     gap: 0.5rem;
     align-items: center;
+  }
+
+  .auth-page {
+    display: flex;
+    justify-content: center;
+    align-items: flex-start;
+    padding: 2rem 0 3rem;
+    background:
+      radial-gradient(ellipse 80% 50% at 50% -20%, color-mix(in srgb, var(--ui-primary) 8%, transparent), transparent);
+  }
+
+  .auth-card {
+    width: 100%;
+    max-width: 24rem;
+    flex-shrink: 0;
+    padding: 2rem;
+    border: 1px solid var(--ui-border);
+    border-radius: calc(var(--ui-radius) + 4px);
+    background: var(--ui-card);
+    box-shadow: 0 4px 24px rgba(0, 0, 0, 0.06);
+  }
+
+  .auth-card-header {
+    margin-bottom: 1.5rem;
+  }
+
+  .auth-card-header h1 {
+    margin: 0 0 0.5rem;
+    font-size: 1.5rem;
+    font-weight: 600;
+    letter-spacing: -0.02em;
+    line-height: 1.2;
+  }
+
+  .auth-card-header p {
+    margin: 0;
+    font-size: 0.875rem;
+    color: var(--ui-muted-foreground);
+    line-height: 1.5;
+  }
+
+  .auth-form {
+    display: grid;
+    gap: 1rem;
+  }
+
+  .auth-submit {
+    width: 100%;
+    margin-top: 0.25rem;
+  }
+
+  .auth-footer {
+    margin: 1.5rem 0 0;
+    padding-top: 1.5rem;
+    border-top: 1px solid var(--ui-border);
+    text-align: center;
+    font-size: 0.875rem;
+    color: var(--ui-muted-foreground);
+  }
+
+  .auth-footer a {
+    color: var(--ui-foreground);
+    font-weight: 500;
+  }
+
+  .auth-link-button {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 100%;
+    height: 2.25rem;
+    border-radius: var(--ui-radius);
+    background: var(--ui-primary);
+    color: var(--ui-primary-foreground);
+    font-size: 0.875rem;
+    font-weight: 500;
+    text-decoration: none;
+    transition: opacity 150ms ease;
+  }
+
+  .auth-link-button:hover {
+    opacity: 0.9;
+    color: var(--ui-primary-foreground);
   }
 }

@@ -1,5 +1,9 @@
 use crate::diagnostic::{Diagnostic, Span};
-use crate::parser::{ClientInitial, ClientSignalDecl, EventBinding, Value};
+use crate::expr;
+use crate::parser::{
+    ClientInitial, ClientSignalDecl, ComponentCall, EventBinding, PropValue, SourceExpr,
+    TemplateNode, Value, WebFile,
+};
 use crate::schema::parser_value_to_json;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,6 +22,8 @@ pub struct IslandManifest {
     pub value_bindings: Vec<ValueBinding>,
     pub html_bindings: Vec<HtmlBinding>,
     pub if_bindings: Vec<IfBinding>,
+    pub attr_bindings: Vec<AttrBinding>,
+    pub for_bindings: Vec<ForBinding>,
     pub bootstrap: Option<String>,
 }
 
@@ -68,10 +74,26 @@ pub struct IfBinding {
     pub signal: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttrBinding {
+    pub attribute: String,
+    pub index: usize,
+    pub js_expr: String,
+    pub signals: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForBinding {
+    pub signal: String,
+    pub item_name: String,
+    pub js_fn_body: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct HandlerCompileContext<'a> {
     pub signals: &'a BTreeSet<String>,
     pub handlers: &'a BTreeSet<String>,
+    pub locals: &'a BTreeSet<String>,
     pub page_actions: &'a BTreeMap<String, Option<String>>,
     pub action_url: &'a str,
     pub param: &'a str,
@@ -128,26 +150,6 @@ WebScript.signal = (initial) => {
       return () => listeners.delete(listener);
     },
   };
-};
-WebScript.escapeHtml = (value) => String(value)
-  .replaceAll("&", "&amp;")
-  .replaceAll("<", "&lt;")
-  .replaceAll(">", "&gt;")
-  .replaceAll("\"", "&quot;");
-WebScript.renderTodos = (todos) => {
-  if (!Array.isArray(todos) || todos.length === 0) {
-    return '<p class="todo-empty">No todos yet.</p>';
-  }
-  return todos.map((todo) => {
-    const title = WebScript.escapeHtml(todo.title ?? "");
-    const badge = todo.done
-      ? '<span class="ui-badge ui-badge-secondary">Done</span>'
-      : '<span class="ui-badge ui-badge-outline">Next</span>';
-  const complete = todo.done
-      ? ""
-      : `<button type="button" class="ui-button ui-button-outline ui-button-sm" data-ws-handler="completeTodo" data-ws-handler-arg="${todo.id}">Mark done</button>`;
-    return `<article class="todo-item">${badge}<p>${title}</p>${complete}</article>`;
-  }).join("");
 };
 WebScript.action = async (url, name, input) => {
   let body;
@@ -411,6 +413,337 @@ pub fn compile_handler_body(
     compile_statements(source, ctx, line, column)
 }
 
+pub fn compile_attribute_expression(
+    source: &str,
+    ctx: &HandlerCompileContext<'_>,
+    line: usize,
+    column: usize,
+) -> Result<String, Diagnostic> {
+    compile_expression(source, ctx, line, column)
+}
+
+pub fn signal_refs_in_source(source: &str, signals: &BTreeSet<String>) -> Vec<String> {
+    let mut found = BTreeSet::new();
+    for signal in signals {
+        if source == *signal
+            || source.contains(&format!("{signal}."))
+            || source.contains(&format!("{signal} "))
+            || source.contains(&format!(" {signal}"))
+            || source.contains(&format!("({signal}"))
+            || source.contains(&format!("!{signal}"))
+        {
+            found.insert(signal.clone());
+        }
+    }
+    found.into_iter().collect()
+}
+
+pub fn is_array_signal_type(type_name: &str) -> bool {
+    type_name.ends_with("[]")
+}
+
+pub fn compile_for_body_js(
+    body: &[TemplateNode],
+    item_name: &str,
+    components: &BTreeMap<String, WebFile>,
+    handlers: &BTreeSet<String>,
+    line: usize,
+) -> Result<String, Diagnostic> {
+    let ctx = ForItemCompileContext {
+        item_name: item_name.to_string(),
+        handlers: handlers.clone(),
+        components,
+        line,
+        props: BTreeMap::new(),
+        forward_bindings: None,
+    };
+    let parts = compile_template_nodes_js(body, &ctx)?;
+    Ok(format!(
+        "const escapeHtml = (value) => String(value ?? '').replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('\"', '&quot;'); return `{}`;",
+        parts.join("")
+    ))
+}
+
+struct ForItemCompileContext<'a> {
+    item_name: String,
+    handlers: BTreeSet<String>,
+    components: &'a BTreeMap<String, WebFile>,
+    line: usize,
+    props: BTreeMap<String, String>,
+    forward_bindings: Option<Vec<EventBinding>>,
+}
+
+fn compile_template_nodes_js(
+    nodes: &[TemplateNode],
+    ctx: &ForItemCompileContext<'_>,
+) -> Result<Vec<String>, Diagnostic> {
+    let mut parts = Vec::new();
+    let mut forward = ctx.forward_bindings.as_deref();
+    for node in nodes {
+        parts.extend(compile_template_node_js(node, ctx, &mut forward)?);
+    }
+    Ok(parts)
+}
+
+fn compile_template_node_js(
+    node: &TemplateNode,
+    ctx: &ForItemCompileContext<'_>,
+    forward: &mut Option<&[EventBinding]>,
+) -> Result<Vec<String>, Diagnostic> {
+    match node {
+        TemplateNode::Text(text) => {
+            if let Some(bindings) = forward.take() {
+                if text.contains("data-ws-bind") {
+                    return Ok(inject_forward_bindings_js(text, bindings, ctx)?);
+                }
+            }
+            Ok(vec![escape_js_template(text)])
+        }
+        TemplateNode::Expr(expr) => {
+            let js = compile_item_expr(&expr.expr, ctx)?;
+            Ok(vec![format!("${{escapeHtml({js})}}")])
+        }
+        TemplateNode::If {
+            condition,
+            then_nodes,
+            else_nodes,
+        } => {
+            let cond = compile_item_condition(condition, ctx)?;
+            let then_parts = compile_template_nodes_js(then_nodes, ctx)?;
+            let else_parts = compile_template_nodes_js(else_nodes, ctx)?;
+            Ok(vec![format!(
+                "${{({cond}) ? `{}` : `{}`}}",
+                then_parts.join(""),
+                else_parts.join("")
+            )])
+        }
+        TemplateNode::Switch {
+            value,
+            cases,
+            default_nodes,
+        } => {
+            let value_js = compile_item_expr(&value.expr, ctx)?;
+            let mut chain = compile_template_nodes_js(default_nodes, ctx)?.join("");
+            for case in cases.iter().rev() {
+                let case_js = compile_item_expr(&case.value.expr, ctx)?;
+                let body = compile_template_nodes_js(&case.nodes, ctx)?.join("");
+                chain = format!("${{({value_js}) === ({case_js}) ? `{body}` : `{chain}`}}");
+            }
+            Ok(vec![chain])
+        }
+        TemplateNode::Component(call) => compile_component_js(call, ctx),
+        _ => Ok(Vec::new()),
+    }
+}
+
+fn compile_item_condition(
+    condition: &SourceExpr,
+    ctx: &ForItemCompileContext<'_>,
+) -> Result<String, Diagnostic> {
+    compile_item_expr(&condition.expr, ctx)
+}
+
+fn compile_item_expr(
+    expression: &expr::Expr,
+    ctx: &ForItemCompileContext<'_>,
+) -> Result<String, Diagnostic> {
+    match expression {
+        expr::Expr::Literal(value) => Ok(js_literal(value)),
+        expr::Expr::Path(path) if path.len() == 1 => {
+            if let Some(prop) = ctx.props.get(&path[0]) {
+                return Ok(prop.clone());
+            }
+            if path[0] == ctx.item_name {
+                return Ok("item".to_string());
+            }
+            Err(Diagnostic::error(
+                Span::at(ctx.line, 1),
+                format!("unknown identifier `{}` in reactive @for body", path[0]),
+                None,
+            ))
+        }
+        expr::Expr::Path(path) if path.first() == Some(&ctx.item_name) => {
+            let field = path[1..].join(".");
+            Ok(format!("item.{field}"))
+        }
+        expr::Expr::Unary { op, expr } => {
+            let inner = compile_item_expr(expr, ctx)?;
+            let op = match op {
+                expr::UnaryOp::Not => "!",
+            };
+            Ok(format!("({op}{inner})"))
+        }
+        expr::Expr::Binary { left, op, right } => {
+            let left_js = compile_item_expr(left, ctx)?;
+            let right_js = compile_item_expr(right, ctx)?;
+            let op = match op {
+                expr::BinaryOp::Or => "||",
+                expr::BinaryOp::And => "&&",
+                expr::BinaryOp::Eq => "==",
+                expr::BinaryOp::NotEq => "!=",
+                expr::BinaryOp::Lt => "<",
+                expr::BinaryOp::LtEq => "<=",
+                expr::BinaryOp::Gt => ">",
+                expr::BinaryOp::GtEq => ">=",
+                expr::BinaryOp::Add => "+",
+                expr::BinaryOp::Sub => "-",
+            };
+            Ok(format!("({left_js} {op} {right_js})"))
+        }
+        expr::Expr::Ternary {
+            condition,
+            then_expr,
+            else_expr,
+        } => {
+            let condition_js = compile_item_expr(condition, ctx)?;
+            let then_js = compile_item_expr(then_expr, ctx)?;
+            let else_js = compile_item_expr(else_expr, ctx)?;
+            Ok(format!("({condition_js} ? {then_js} : {else_js})"))
+        }
+        _ => Err(Diagnostic::error(
+            Span::at(ctx.line, 1),
+            "unsupported expression in reactive @for body",
+            None,
+        )),
+    }
+}
+
+fn compile_component_js(
+    call: &ComponentCall,
+    ctx: &ForItemCompileContext<'_>,
+) -> Result<Vec<String>, Diagnostic> {
+    let component = ctx.components.get(&call.name).ok_or_else(|| {
+        Diagnostic::error(
+            Span::identifier(call.line, call.column, &call.name),
+            format!("unknown component `{name}`", name = call.name),
+            None,
+        )
+    })?;
+
+    let declaration = component.component.as_ref().ok_or_else(|| {
+        Diagnostic::error(
+            Span::identifier(call.line, call.column, &call.name),
+            format!("`{name}` is not a component", name = call.name),
+            None,
+        )
+    })?;
+
+    let mut props = BTreeMap::new();
+    for prop_decl in &declaration.props {
+        if let Some(default) = &prop_decl.default {
+            props.insert(prop_decl.name.clone(), js_literal(default));
+        }
+    }
+    for prop in &call.props {
+        let value = match &prop.value {
+            PropValue::Expr(expr) => compile_item_expr(&expr.expr, ctx)?,
+            PropValue::Literal(value) => js_literal(value),
+        };
+        props.insert(prop.name.clone(), value);
+    }
+
+    let forward_bindings = if call.event_bindings.is_empty() {
+        None
+    } else {
+        Some(call.event_bindings.clone())
+    };
+
+    let child_ctx = ForItemCompileContext {
+        item_name: ctx.item_name.clone(),
+        handlers: ctx.handlers.clone(),
+        components: ctx.components,
+        line: ctx.line,
+        props,
+        forward_bindings,
+    };
+
+    compile_template_nodes_js(&component.template, &child_ctx)
+}
+
+fn inject_forward_bindings_js(
+    text: &str,
+    bindings: &[EventBinding],
+    ctx: &ForItemCompileContext<'_>,
+) -> Result<Vec<String>, Diagnostic> {
+    const MARKER: &str = "data-ws-bind";
+    let marker_pos = text.find(MARKER).ok_or_else(|| {
+        Diagnostic::error(
+            Span::at(ctx.line, 1),
+            "forwarded event bindings require `data-ws-bind` on the component root element",
+            None,
+        )
+    })?;
+    let tag_start = text[..marker_pos]
+        .rfind('<')
+        .ok_or_else(|| Diagnostic::error(Span::at(ctx.line, 1), "malformed bind target", None))?;
+    let after_marker = &text[marker_pos..];
+    let tag_end = after_marker
+        .find('>')
+        .map(|index| marker_pos + index + 1)
+        .ok_or_else(|| Diagnostic::error(Span::at(ctx.line, 1), "malformed bind target", None))?;
+
+    let mut tag = text[tag_start..tag_end].to_string();
+    if tag.ends_with('>') {
+        tag.pop();
+    }
+    tag = tag.replace(" data-ws-bind", "");
+    tag = tag.replace(MARKER, "");
+
+    for binding in bindings {
+        if binding.event == "click" {
+            if let Some((handler, arg)) = compile_handler_call(&binding.handler_source, ctx) {
+                tag.push_str(&format!(
+                    r#" data-ws-handler="{handler}" data-ws-handler-arg="${{{arg}}}""#
+                ));
+            }
+        }
+    }
+    tag.push('>');
+
+    let mut parts = Vec::new();
+    if tag_start > 0 {
+        parts.push(escape_js_template(&text[..tag_start]));
+    }
+    parts.push(escape_js_template(&tag));
+    if tag_end < text.len() {
+        parts.push(escape_js_template(&text[tag_end..]));
+    }
+    Ok(parts)
+}
+
+fn compile_handler_call(
+    source: &str,
+    ctx: &ForItemCompileContext<'_>,
+) -> Option<(String, String)> {
+    let source = source.trim();
+    if !source.contains('(') {
+        if ctx.handlers.contains(source) {
+            return Some((source.to_string(), "event".to_string()));
+        }
+        return None;
+    }
+    let open_paren = source.find('(')?;
+    let name = source[..open_paren].trim();
+    if !ctx.handlers.contains(name) {
+        return None;
+    }
+    let args_str = source[open_paren + 1..].strip_suffix(')')?.trim();
+    let arg_js = if args_str.is_empty() {
+        "event".to_string()
+    } else {
+        let expr = expr::parse(args_str, ctx.line, 1).ok()?;
+        compile_item_expr(&expr, ctx).ok()?
+    };
+    Some((name.to_string(), arg_js))
+}
+
+fn escape_js_template(value: &str) -> String {
+    value
+        .replace('\\', "\\\\")
+        .replace('`', "\\`")
+        .replace("${", "\\${")
+}
+
 pub fn handler_body_is_async(source: &str) -> bool {
     source.contains("await ")
 }
@@ -431,6 +764,7 @@ pub fn compile_event_handler(
     let lambda_ctx = HandlerCompileContext {
         signals: ctx.signals,
         handlers: ctx.handlers,
+        locals: ctx.locals,
         page_actions: ctx.page_actions,
         action_url: ctx.action_url,
         param: &param,
@@ -612,6 +946,53 @@ pub fn render_island_script(manifest: &IslandManifest) -> String {
             signal = signal
         ));
         lines.push("  });".to_string());
+    }
+
+    for binding in &manifest.attr_bindings {
+        let attr_key = binding.attribute.replace('-', "_");
+        let var_name = format!("attr_{attr_key}_{}", binding.index);
+        lines.push(format!(
+            "  const {var_name} = root.querySelector('[data-ws-attr-{attr}=\"{index}\"]');",
+            attr = binding.attribute,
+            index = binding.index
+        ));
+        lines.push(format!(
+            "  const update_{var_name} = () => {{ if ({var_name}) {var_name}.setAttribute('{attr}', String({expr})); }};",
+            attr = binding.attribute,
+            expr = binding.js_expr
+        ));
+        for signal in &binding.signals {
+            lines.push(format!(
+                "  signals.{signal}.subscribe(() => update_{var_name}());",
+                signal = signal
+            ));
+        }
+        lines.push(format!("  update_{var_name}();"));
+    }
+
+    for binding in &manifest.for_bindings {
+        let signal = &binding.signal;
+        lines.push(format!(
+            "  const for_{signal} = root.querySelector('[data-ws-for=\"{signal}\"]');",
+            signal = signal
+        ));
+        lines.push(format!(
+            "  const renderFor_{signal} = (item) => {{ {body} }};",
+            signal = signal,
+            body = binding.js_fn_body
+        ));
+        lines.push(format!(
+            "  const update_for_{signal} = (items) => {{ if (!for_{signal}) return; for_{signal}.innerHTML = Array.isArray(items) ? items.map(renderFor_{signal}).join('') : ''; }};",
+            signal = signal
+        ));
+        lines.push(format!(
+            "  signals.{signal}.subscribe((items) => update_for_{signal}(items));",
+            signal = signal
+        ));
+        lines.push(format!(
+            "  update_for_{signal}(signals.{signal}.get());",
+            signal = signal
+        ));
     }
 
     lines.push("})();".to_string());
@@ -839,13 +1220,21 @@ fn compile_statements(
         return Err(invalid_handler("handler", source, line, column));
     }
 
+    let mut locals = ctx.locals.clone();
     let mut compiled = Vec::new();
     for part in parts {
         let part = part.trim();
         if part.is_empty() {
             continue;
         }
-        compiled.push(compile_statement(part, ctx, line, column)?);
+        let statement_ctx = HandlerCompileContext {
+            locals: &locals,
+            ..ctx.clone()
+        };
+        compiled.push(compile_statement(part, &statement_ctx, line, column)?);
+        if let Some(name) = let_binding_name(part) {
+            locals.insert(name);
+        }
     }
 
     if compiled.is_empty() {
@@ -853,6 +1242,16 @@ fn compile_statements(
     }
 
     Ok(compiled.join("; "))
+}
+
+fn let_binding_name(source: &str) -> Option<String> {
+    let rest = source.trim().strip_prefix("let ")?.trim();
+    let name = rest.split_once('=')?.0.trim();
+    if is_identifier(name) {
+        Some(name.to_string())
+    } else {
+        None
+    }
 }
 
 fn compile_statement(
@@ -954,7 +1353,7 @@ fn compile_expression(
         line,
         column,
     };
-    let expr = parser.parse_or()?;
+    let expr = parser.parse_ternary()?;
     if parser.peek().is_some() {
         return Err(invalid_handler("expression", source, line, column));
     }
@@ -1066,6 +1465,17 @@ impl ExprParser<'_, '_> {
             self.index += 1;
         }
         token
+    }
+
+    fn parse_ternary(&mut self) -> Result<String, Diagnostic> {
+        let mut value = self.parse_or()?;
+        if self.match_lexeme("?") {
+            let then_value = self.parse_or()?;
+            self.expect_lexeme(":")?;
+            let else_value = self.parse_ternary()?;
+            value = format!("({value} ? {then_value} : {else_value})");
+        }
+        Ok(value)
     }
 
     fn parse_or(&mut self) -> Result<String, Diagnostic> {
@@ -1233,6 +1643,7 @@ impl ExprParser<'_, '_> {
                 Ok(token.lexeme)
             }
             "event" => Ok(param.to_string()),
+            name if self.ctx.locals.contains(name) => Ok(name.to_string()),
             name if self.ctx.signals.contains(name) => Ok(format!("signals.{name}.get()")),
             name if self.ctx.handlers.contains(name) => Ok(format!("handlers.{name}")),
             name if is_identifier(name) => Ok(name.to_string()),
@@ -1411,6 +1822,7 @@ fn tokenize(source: &str, line: usize, column: usize) -> Result<Vec<Token>, Diag
                     '{' => "{",
                     '}' => "}",
                     ':' => ":",
+                    '?' => "?",
                     '.' => ".",
                     ',' => ",",
                     '!' => "!",
@@ -1526,10 +1938,12 @@ mod tests {
         signals: &'a BTreeSet<String>,
         handlers: &'a BTreeSet<String>,
         page_actions: &'a BTreeMap<String, Option<String>>,
+        locals: &'a BTreeSet<String>,
     ) -> HandlerCompileContext<'a> {
         HandlerCompileContext {
             signals,
             handlers,
+            locals,
             page_actions,
             action_url: "/",
             param: DEFAULT_EVENT_PARAM,
@@ -1558,7 +1972,8 @@ mod tests {
         let signals = BTreeSet::from(["count".to_string()]);
         let handlers = BTreeSet::new();
         let page_actions = BTreeMap::new();
-        let compile_ctx = ctx(&signals, &handlers, &page_actions);
+        let locals = BTreeSet::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions, &locals);
         let compiled = compile("count++", &compile_ctx);
         assert_eq!(
             compiled.js_body,
@@ -1572,7 +1987,8 @@ mod tests {
         let signals = BTreeSet::from(["open".to_string()]);
         let handlers = BTreeSet::new();
         let page_actions = BTreeMap::new();
-        let compile_ctx = ctx(&signals, &handlers, &page_actions);
+        let locals = BTreeSet::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions, &locals);
         let compiled = compile("open = !open", &compile_ctx);
         assert_eq!(compiled.js_body, "signals.open.set(!signals.open.get())");
     }
@@ -1582,7 +1998,8 @@ mod tests {
         let signals = BTreeSet::from(["name".to_string()]);
         let handlers = BTreeSet::new();
         let page_actions = BTreeMap::new();
-        let compile_ctx = ctx(&signals, &handlers, &page_actions);
+        let locals = BTreeSet::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions, &locals);
         let compiled = compile("name = event.value", &compile_ctx);
         assert_eq!(compiled.js_body, "signals.name.set(event.target.value)");
     }
@@ -1592,7 +2009,8 @@ mod tests {
         let signals = BTreeSet::from(["count".to_string()]);
         let handlers = BTreeSet::new();
         let page_actions = BTreeMap::new();
-        let compile_ctx = ctx(&signals, &handlers, &page_actions);
+        let locals = BTreeSet::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions, &locals);
         let compiled = compile("count = 0", &compile_ctx);
         assert_eq!(compiled.js_body, "signals.count.set(0)");
     }
@@ -1602,7 +2020,8 @@ mod tests {
         let signals = BTreeSet::new();
         let handlers = BTreeSet::from(["save".to_string()]);
         let page_actions = BTreeMap::new();
-        let compile_ctx = ctx(&signals, &handlers, &page_actions);
+        let locals = BTreeSet::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions, &locals);
         let compiled =
             compile_event_handler("submit", "save", 1, 1, &compile_ctx).expect("handler");
         assert_eq!(compiled.js_body, "handlers.save(event)");
@@ -1613,7 +2032,8 @@ mod tests {
         let signals = BTreeSet::from(["count".to_string(), "message".to_string()]);
         let handlers = BTreeSet::new();
         let page_actions = BTreeMap::new();
-        let compile_ctx = ctx(&signals, &handlers, &page_actions);
+        let locals = BTreeSet::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions, &locals);
         let compiled = compile("message = \"Count: \" + count", &compile_ctx);
         assert_eq!(
             compiled.js_body,
@@ -1626,7 +2046,8 @@ mod tests {
         let signals = BTreeSet::from(["log".to_string()]);
         let handlers = BTreeSet::new();
         let page_actions = BTreeMap::new();
-        let compile_ctx = ctx(&signals, &handlers, &page_actions);
+        let locals = BTreeSet::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions, &locals);
         let compiled = compile("log = \"Key: \" + event.key", &compile_ctx);
         assert_eq!(compiled.js_body, "signals.log.set((\"Key: \" + event.key))");
     }
@@ -1636,7 +2057,8 @@ mod tests {
         let signals = BTreeSet::from(["count".to_string(), "message".to_string()]);
         let handlers = BTreeSet::new();
         let page_actions = BTreeMap::new();
-        let compile_ctx = ctx(&signals, &handlers, &page_actions);
+        let locals = BTreeSet::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions, &locals);
         let js = compile_handler_body("count = 0\nmessage = \"reset\"", &compile_ctx, 1, 1)
             .expect("handler body");
         assert_eq!(js, "signals.count.set(0); signals.message.set(\"reset\")");
@@ -1647,7 +2069,8 @@ mod tests {
         let signals = BTreeSet::from(["count".to_string()]);
         let handlers = BTreeSet::new();
         let page_actions = BTreeMap::new();
-        let compile_ctx = ctx(&signals, &handlers, &page_actions);
+        let locals = BTreeSet::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions, &locals);
         let compiled = compile("|e| count++", &compile_ctx);
         assert_eq!(compiled.param_name, "e");
         assert_eq!(
@@ -1661,7 +2084,8 @@ mod tests {
         let signals = BTreeSet::from(["a".to_string(), "b".to_string()]);
         let handlers = BTreeSet::new();
         let page_actions = BTreeMap::new();
-        let compile_ctx = ctx(&signals, &handlers, &page_actions);
+        let locals = BTreeSet::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions, &locals);
         let compiled = compile("|event| { a = 1; b = 2 }", &compile_ctx);
         assert_eq!(compiled.js_body, "signals.a.set(1); signals.b.set(2)");
     }
@@ -1671,7 +2095,8 @@ mod tests {
         let signals = BTreeSet::from(["log".to_string()]);
         let handlers = BTreeSet::from(["save".to_string()]);
         let page_actions = BTreeMap::new();
-        let compile_ctx = ctx(&signals, &handlers, &page_actions);
+        let locals = BTreeSet::new();
+        let compile_ctx = ctx(&signals, &handlers, &page_actions, &locals);
         let compiled = compile("|event| event.key == \"Enter\" && save()", &compile_ctx);
         assert_eq!(
             compiled.js_body,
@@ -1736,6 +2161,8 @@ mod tests {
             value_bindings: Vec::new(),
             html_bindings: Vec::new(),
             if_bindings: Vec::new(),
+            attr_bindings: Vec::new(),
+            for_bindings: Vec::new(),
             bootstrap: None,
         };
 
@@ -1745,6 +2172,14 @@ mod tests {
         assert!(script.contains("data-ws-click=\"0\""));
         assert!(script.contains("data-ws-text=\"count\""));
         assert!(script.contains("(event) => { signals.count.set"));
+    }
+
+    #[test]
+    fn runtime_excludes_app_specific_helpers() {
+        let runtime = client_runtime_script();
+        assert!(!runtime.contains("passwordToggle"));
+        assert!(!runtime.contains("renderTodos"));
+        assert!(!runtime.contains("escapeHtml"));
     }
 
     #[test]
@@ -1763,14 +2198,44 @@ mod tests {
     }
 
     #[test]
+    fn let_binding_shadows_signal_name_in_handler() {
+        let signals = BTreeSet::from(["todos".to_string(), "title".to_string()]);
+        let handlers = BTreeSet::from(["applyTodos".to_string()]);
+        let page_actions =
+            BTreeMap::from([("addTodo".to_string(), Some("AddTodoInput".to_string()))]);
+        let locals = BTreeSet::new();
+        let compile_ctx = HandlerCompileContext {
+            signals: &signals,
+            handlers: &handlers,
+            locals: &locals,
+            page_actions: &page_actions,
+            action_url: "/todos/live",
+            param: "event",
+            is_submit_context: false,
+        };
+        let js = compile_handler_body(
+            "let todos = await action('addTodo', { title: title })\napplyTodos(todos)\ntitle = \"\"",
+            &compile_ctx,
+            1,
+            1,
+        )
+        .expect("handler");
+        assert!(js.contains("const todos = await WebScript.action"));
+        assert!(js.contains("handlers.applyTodos(todos)"));
+        assert!(!js.contains("handlers.applyTodos(signals.todos.get())"));
+    }
+
+    #[test]
     fn compiles_action_call_with_object_literal() {
         let signals = BTreeSet::from(["title".to_string()]);
         let handlers = BTreeSet::new();
         let page_actions =
             BTreeMap::from([("addTodo".to_string(), Some("AddTodoInput".to_string()))]);
+        let locals = BTreeSet::new();
         let compile_ctx = HandlerCompileContext {
             signals: &signals,
             handlers: &handlers,
+            locals: &locals,
             page_actions: &page_actions,
             action_url: "/todos/live",
             param: "event",
@@ -1813,6 +2278,8 @@ mod tests {
             value_bindings: Vec::new(),
             html_bindings: Vec::new(),
             if_bindings: Vec::new(),
+            attr_bindings: Vec::new(),
+            for_bindings: Vec::new(),
             bootstrap: None,
         };
 
