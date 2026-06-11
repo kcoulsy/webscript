@@ -1,0 +1,18 @@
+@component UI.Button {
+  label: string
+  variant: string = "default"
+  size: string = "default"
+  type: string = "button"
+  disabled: bool = false
+  class: string = ""
+}
+
+@if disabled {
+  <button type={type} class={"ui-button " + class} data-variant={variant} data-size={size} data-ws-bind disabled>
+    {label}
+  </button>
+} @else {
+  <button type={type} class={"ui-button " + class} data-variant={variant} data-size={size} data-ws-bind>
+    {label}
+  </button>
+}

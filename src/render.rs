@@ -642,9 +642,13 @@ fn render_nodes(
                 }
             }
             TemplateNode::Expr(expr) => {
-                let in_value_attr = html.ends_with("value=");
+                let attr_context = expression_attribute_context(&html);
                 html.push_str(&render_expr(
-                    expr, &scope, island, in_value_attr, shadowed_props,
+                    expr,
+                    &scope,
+                    island,
+                    attr_context.as_deref(),
+                    shadowed_props,
                 )?);
             }
             TemplateNode::Component(call) => {
@@ -802,7 +806,7 @@ fn render_expr(
     expr: &SourceExpr,
     scope: &Scope,
     island: &mut Option<&mut IslandBuildState<'_>>,
-    in_value_attr: bool,
+    attr_context: Option<&str>,
     shadowed_props: &BTreeSet<String>,
 ) -> Result<String, Diagnostic> {
     if let Some(island) = island.as_deref_mut() {
@@ -815,16 +819,19 @@ fn render_expr(
                     .map(String::as_str)
                     .unwrap_or("string");
 
-                if in_value_attr && type_name == "string" {
-                    if !island.manifest.value_bindings.iter().any(|binding| {
-                        binding.signal == signal_name
-                    }) {
+                if attr_context.is_some() {
+                    if !island
+                        .manifest
+                        .value_bindings
+                        .iter()
+                        .any(|binding| binding.signal == signal_name)
+                    {
                         island.manifest.value_bindings.push(ValueBinding {
                             signal: signal_name.to_string(),
                             handler_index: 0,
                         });
                     }
-                    return Ok(escape_html(&value.render()));
+                    return Ok(quoted_attr_value(&value.render()));
                 }
 
                 if type_name == "string" {
@@ -863,7 +870,38 @@ fn render_expr(
     }
 
     let value = evaluate_source_expr(expr, scope)?;
+    if attr_context.is_some() {
+        return Ok(quoted_attr_value(&value.render()));
+    }
     Ok(escape_html(&value.render()))
+}
+
+fn expression_attribute_context(html: &str) -> Option<String> {
+    let tag_start = html.rfind('<')?;
+    if html[tag_start..].contains('>') {
+        return None;
+    }
+
+    let before_expr = html[tag_start + 1..].trim_end();
+    let before_eq = before_expr.strip_suffix('=')?.trim_end();
+    let name_start = before_eq
+        .rfind(|char: char| char.is_whitespace() || char == '<')
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let name = &before_eq[name_start..];
+    if name.is_empty()
+        || !name
+            .chars()
+            .all(|char| char.is_ascii_alphanumeric() || matches!(char, '-' | '_' | ':' | '.'))
+    {
+        return None;
+    }
+
+    Some(name.to_string())
+}
+
+fn quoted_attr_value(value: &str) -> String {
+    format!("\"{}\"", escape_html(value))
 }
 
 fn signal_expr_name(expr: &expr::Expr) -> Option<&str> {
@@ -1054,10 +1092,23 @@ fn forward_bind_target_missing_at(line: usize) -> Diagnostic {
 }
 
 fn component_template_has_bind_target(component: &WebFile) -> bool {
-    component
-        .template
-        .iter()
-        .any(|node| matches!(node, TemplateNode::Text(text) if text.contains("data-ws-bind")))
+    template_nodes_have_bind_target(&component.template)
+}
+
+fn template_nodes_have_bind_target(nodes: &[TemplateNode]) -> bool {
+    nodes.iter().any(|node| match node {
+        TemplateNode::Text(text) => text.contains("data-ws-bind"),
+        TemplateNode::If {
+            then_nodes,
+            else_nodes,
+            ..
+        } => {
+            template_nodes_have_bind_target(then_nodes)
+                || template_nodes_have_bind_target(else_nodes)
+        }
+        TemplateNode::For { body, .. } => template_nodes_have_bind_target(body),
+        _ => false,
+    })
 }
 
 fn render_component(
@@ -1784,10 +1835,13 @@ fn escape_html(value: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_with_components, ComponentRegistry, Scope};
+    use super::{
+        render_with_components, validate_with_components, ComponentRegistry, LayoutRegistry, Scope,
+    };
     use crate::diagnostic::Span;
     use crate::parser::{parse, WebFile};
     use crate::runtime::WebRuntime;
+    use std::collections::BTreeMap;
 
     fn register_ui_primitives(components: &mut ComponentRegistry) {
         let primitives = [
@@ -1831,6 +1885,47 @@ mod tests {
             .expect("rendered")
             .html,
             "<h1>&lt;Ada&gt;</h1>"
+        );
+    }
+
+    #[test]
+    fn quotes_expression_attribute_values() {
+        let input = parse(include_str!("../app/components/UI/Input.web")).expect("input");
+        let page = parse(
+            "@page \"/\"\n\n@let name = \"Ada Lovelace\"\n\n<UI.Input name=\"name\" placeholder={name} />",
+        )
+        .expect("page");
+        let components = with_ui_primitives(input);
+
+        let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
+            .expect("rendered");
+
+        assert!(output.html.contains("placeholder=\"Ada Lovelace\""));
+        assert!(!output.html.contains("Lovelace=\"\""));
+    }
+
+    #[test]
+    fn validates_nested_bind_targets_for_forwarded_events() {
+        let button = parse(include_str!("../app/components/UI/Button.web")).expect("button");
+        let page = parse(
+            "@page \"/\"\n\n@client {\n  count: signal<int> = 0\n  fn reset() {\n    count = 0\n  }\n}\n\n<UI.Button label=\"Reset\" @click={reset} />",
+        )
+        .expect("page");
+        let components = with_ui_primitives(button);
+
+        let diagnostics = validate_with_components(
+            &page,
+            &components,
+            &LayoutRegistry::new(),
+            None,
+            &BTreeMap::new(),
+        );
+
+        assert!(
+            diagnostics
+                .iter()
+                .all(|diagnostic| { !diagnostic.message.contains("has no `data-ws-bind` target") }),
+            "unexpected diagnostics: {diagnostics:?}"
         );
     }
 
@@ -2136,7 +2231,7 @@ mod tests {
             output.html
         );
         assert!(
-            output.html.contains("id=greeting-name")
+            output.html.contains("id=\"greeting-name\"")
                 && output.html.contains("data-ws-input=\"0\"")
                 && output.html.contains("data-ws-value=\"name\""),
             "expected intact input with forwarded bindings: {}",

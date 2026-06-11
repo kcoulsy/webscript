@@ -10,7 +10,7 @@
 
 <main>
   <h1>{title}</h1>
-  <p>@load headline: {headline}</p>
+  <p>Headline: {headline}</p>
   <p>This route is using a typed path parameter.</p>
 
   @do {
@@ -20,7 +20,7 @@
     }
   }
 
-  <p>@do badge: {badge}</p>
+  <p>Badge: {badge}</p>
 
   @if isIntro {
     <p>This post gets special copy because the route param matched "intro".</p>

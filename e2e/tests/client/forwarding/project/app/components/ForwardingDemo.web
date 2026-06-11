@@ -1,0 +1,16 @@
+@component ForwardingDemo {
+}
+
+@client {
+  count: signal<int> = 0
+
+  fn reset() {
+    count = count + 1
+  }
+}
+
+<section>
+  <UI.Input id="demo-name" name="name" placeholder="Ada Lovelace" />
+  <UI.Button label="Reset list" variant="destructive" size="sm" @click={reset} />
+  <p>Clicks: {count}</p>
+</section>

@@ -47,7 +47,7 @@
 
 <main>
   <h1>{greeting}</h1>
-  <p>@load: {loaded}</p>
+  <p>Loaded data: {loaded}</p>
   <p>Author: {author.name} ({author.role})</p>
   <p>Visit count: {visits + 1}</p>
   <p>Session count: {session.count}</p>
@@ -61,7 +61,7 @@
     promo: string = "Save " + discount + "%"
   }
 
-  <p>@do promo: {promo}</p>
+  <p>Promo: {promo}</p>
 
   <form method="post" action="/" class="form-stack">
     <input type="hidden" name="_action" value="increment" />
