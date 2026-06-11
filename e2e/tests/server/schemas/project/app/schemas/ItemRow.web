@@ -1,0 +1,3 @@
+@schema ItemRow {
+  title: string
+}

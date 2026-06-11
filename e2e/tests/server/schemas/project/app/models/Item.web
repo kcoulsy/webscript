@@ -1,0 +1,4 @@
+@model Item {
+  id: int @primary @auto
+  title: string
+}

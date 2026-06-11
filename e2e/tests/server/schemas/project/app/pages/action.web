@@ -1,0 +1,18 @@
+@page "/action"
+
+@action submitItem(input: AddItemInput) {
+  session.name = input.title
+  redirect("/action")
+}
+
+<main>
+  <h1>Action schema</h1>
+  <p>Last title: {session.name}</p>
+
+  <form method="post" action="/action">
+    <input type="hidden" name="_action" value="submitItem" />
+    <label for="item-title">Title</label>
+    <input id="item-title" name="title" value="" />
+    <button type="submit">Submit item</button>
+  </form>
+</main>

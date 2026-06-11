@@ -1,0 +1,10 @@
+@page "/card"
+
+<main>
+  <h1>Card demo</h1>
+  <UI.Card
+    title="Nested card"
+    description="Rendered from a namespaced component"
+    content="Card body text"
+  />
+</main>

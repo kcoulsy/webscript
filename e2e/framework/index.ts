@@ -24,6 +24,8 @@ export {
   resolveWebBinary,
   runCargoBuild,
   runWebCheck,
+  runWebDbGenerate,
+  runWebDbMigrate,
   startWebServer,
   type CommandResult,
 } from "./web-cli.js";

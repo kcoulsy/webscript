@@ -1,4 +1,4 @@
-@page "/fetch-demo"
+@page "/fetch-ok"
 
 @load {
   title: string = ""
@@ -15,7 +15,7 @@
 }
 
 <main>
-  <h1>Fetch demo</h1>
+  <h1>Fetch OK</h1>
   <p>Title: {title}</p>
   <p>Completed: {completed}</p>
   <p>Error: {error}</p>

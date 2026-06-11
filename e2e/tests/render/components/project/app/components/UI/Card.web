@@ -1,0 +1,23 @@
+@component UI.Card {
+  title: string = ""
+  description: string = ""
+  content: string = ""
+}
+
+<div class="ui-card">
+  @if title != "" || description != "" {
+    <div class="ui-card-header">
+      @if title != "" {
+        <h3 class="ui-card-title">{title}</h3>
+      }
+      @if description != "" {
+        <p class="ui-card-description">{description}</p>
+      }
+    </div>
+  }
+  @if content != "" {
+    <div class="ui-card-content">
+      <p>{content}</p>
+    </div>
+  }
+</div>

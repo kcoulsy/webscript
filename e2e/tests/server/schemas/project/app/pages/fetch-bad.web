@@ -1,0 +1,16 @@
+@page "/fetch-bad"
+
+@load {
+  error: string = ""
+
+  try {
+    _: StrictTodo = await fetch("https://jsonplaceholder.typicode.com/todos/1", StrictTodo)
+  } catch err {
+    error = err.message
+  }
+}
+
+<main>
+  <h1>Fetch bad</h1>
+  <p>Error: {error}</p>
+</main>

@@ -1,0 +1,7 @@
+@schema StrictTodo {
+  userId: int
+  id: int
+  title: string
+  completed: bool
+  extraRequired: string
+}

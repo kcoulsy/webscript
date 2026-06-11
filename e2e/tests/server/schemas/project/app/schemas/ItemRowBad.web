@@ -1,0 +1,4 @@
+@schema ItemRowBad {
+  title: string
+  done: bool
+}

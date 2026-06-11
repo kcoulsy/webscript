@@ -41,6 +41,24 @@ export function runWebCheck(
   return runProcess(web, ["check"], projectRoot);
 }
 
+export function runWebDbGenerate(
+  repoRoot: string,
+  projectRoot: string,
+  name?: string,
+): Promise<CommandResult> {
+  const web = resolveWebBinary(repoRoot);
+  const args = name ? ["db:generate", name] : ["db:generate"];
+  return runProcess(web, args, projectRoot);
+}
+
+export function runWebDbMigrate(
+  repoRoot: string,
+  projectRoot: string,
+): Promise<CommandResult> {
+  const web = resolveWebBinary(repoRoot);
+  return runProcess(web, ["db:migrate"], projectRoot);
+}
+
 export function startWebServer(
   repoRoot: string,
   projectRoot: string,

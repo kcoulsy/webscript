@@ -1,0 +1,17 @@
+@page "/db-bad"
+
+@load {
+  error: string = ""
+
+  try {
+    await db.execute("INSERT INTO Item (title) VALUES (?1)", ["Mismatch"])
+    _: ItemRowBad[] = await db.query("SELECT title FROM Item", ItemRowBad)
+  } catch err {
+    error = err.message
+  }
+}
+
+<main>
+  <h1>DB bad</h1>
+  <p>Error: {error}</p>
+</main>

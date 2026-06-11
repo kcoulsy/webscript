@@ -1,0 +1,20 @@
+@page "/db-ok"
+
+@load {
+  queryOk: bool = false
+  error: string = ""
+
+  try {
+    await db.execute("INSERT INTO Item (title) VALUES (?1)", ["Ship it"])
+    _: ItemRow[] = await db.query("SELECT title FROM Item", ItemRow)
+    queryOk = true
+  } catch err {
+    error = err.message
+  }
+}
+
+<main>
+  <h1>DB OK</h1>
+  <p>Query OK: {queryOk}</p>
+  <p>Error: {error}</p>
+</main>

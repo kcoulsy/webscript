@@ -1,0 +1,5 @@
+@component Metric {
+  value: int
+}
+
+<p class="metric">{value}</p>

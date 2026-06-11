@@ -1,0 +1,6 @@
+@page "/"
+
+<main>
+  <h1>Type check fixture</h1>
+  <Counter initial={0} label="Home" />
+</main>

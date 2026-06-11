@@ -1,0 +1,35 @@
+@component Counter {
+  initial: int = 0
+  label: string = "Count"
+}
+
+@client {
+  count: signal<int> = initial
+}
+
+<div class="counter">
+  <p class="counter-label">{label}: <span>{count}</span></p>
+  <div class="button-row">
+    <button type="button" @click={count++}>+</button>
+    <button type="button" @click={count--}>-</button>
+    <button type="button" @click={count = 0}>Reset</button>
+  </div>
+</div>
+
+@style {
+  .counter {
+    padding: 0.75rem;
+    border: 1px solid #ccc;
+    border-radius: 0.5rem;
+    margin-bottom: 0.75rem;
+  }
+
+  .counter-label {
+    margin: 0 0 0.5rem;
+  }
+
+  .button-row {
+    display: flex;
+    gap: 0.5rem;
+  }
+}

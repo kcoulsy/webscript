@@ -1,0 +1,12 @@
+@page "/"
+
+<main>
+  <h1>Schema runtime fixture</h1>
+  <nav>
+    <a href="/fetch-ok">Fetch OK</a>
+    <a href="/fetch-bad">Fetch bad</a>
+    <a href="/db-ok">DB OK</a>
+    <a href="/db-bad">DB bad</a>
+    <a href="/action">Action</a>
+  </nav>
+</main>

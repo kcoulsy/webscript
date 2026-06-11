@@ -1,0 +1,10 @@
+@layout AppLayout {
+}
+
+<header>
+  <nav aria-label="Main">
+    <a href="/">Home</a>
+  </nav>
+</header>
+
+<slot />

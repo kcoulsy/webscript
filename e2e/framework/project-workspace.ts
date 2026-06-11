@@ -6,6 +6,8 @@ import type { Page } from "@playwright/test";
 import { expect } from "@playwright/test";
 import {
   runWebCheck,
+  runWebDbGenerate,
+  runWebDbMigrate,
   startWebServer,
   type CommandResult,
 } from "./web-cli.js";
@@ -84,6 +86,13 @@ export class ProjectWorkspace {
       expect(result.output).toMatch(matcher);
     }
     return result;
+  }
+
+  async setupDatabase(migrationName = "init"): Promise<void> {
+    const gen = await runWebDbGenerate(this.repoRoot, this.root, migrationName);
+    expect(gen.ok, `web db:generate failed.\n${gen.output}`).toBe(true);
+    const mig = await runWebDbMigrate(this.repoRoot, this.root);
+    expect(mig.ok, `web db:migrate failed.\n${mig.output}`).toBe(true);
   }
 
   async startServer(workerSlot = 0): Promise<string> {

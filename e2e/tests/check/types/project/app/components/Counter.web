@@ -1,0 +1,12 @@
+@component Counter {
+  initial: int = 0
+  label: string = "Count"
+}
+
+@client {
+  count: signal<int> = initial
+}
+
+<div class="counter">
+  <p>{label}: {count}</p>
+</div>

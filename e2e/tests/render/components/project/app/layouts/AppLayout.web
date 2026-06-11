@@ -1,0 +1,13 @@
+@layout AppLayout {
+}
+
+<header class="app-layout">
+  <nav aria-label="Main">
+    <a href="/">Home</a>
+    <a href="/preview">Preview</a>
+    <a href="/card">Card</a>
+    <a href="/counter">Counter</a>
+  </nav>
+</header>
+
+<slot />

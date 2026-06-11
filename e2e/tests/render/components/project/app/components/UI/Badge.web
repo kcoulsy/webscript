@@ -1,0 +1,6 @@
+@component UI.Badge {
+  text: string
+  variant: string = "default"
+}
+
+<span class="ui-badge">{text}</span>

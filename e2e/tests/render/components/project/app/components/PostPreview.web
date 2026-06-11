@@ -1,0 +1,13 @@
+@component PostPreview {
+  title: string
+  rank: int = 0
+  featured: bool = false
+}
+
+<article class="post-preview">
+  @if featured {
+    <UI.Badge text="Featured" />
+  }
+  <h3>{title}</h3>
+  <p>Rank {rank}</p>
+</article>

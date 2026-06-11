@@ -2,6 +2,5 @@
 
 <main>
   <h1>Async smoke home</h1>
-  <a href="/fetch-demo">Fetch demo</a>
   <a href="/async-demo">Async demo</a>
 </main>
