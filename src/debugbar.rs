@@ -1,24 +1,7 @@
-use crate::parser::{self, Value};
-use crate::runtime::WebRuntime;
-use crate::{client, render, style};
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-const DEVTOOLS_COMPONENT: &str = include_str!("devtools.web");
-const DEVTOOLS_PAGE: &str = r#"@page "/__webscript/devtools"
-@layout none
-
-<WebScriptDevtools
-  requestPath={requestPath}
-  routeFile={routeFile}
-  entries={entries}
-  tasks={tasks}
-  ticks={ticks}
-  queries={queries}
-  total={total}
-/>
-"#;
+const DEVTOOLS_CLIENT_SCRIPT: &str = include_str!("devtools-client.js");
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskKind {
@@ -199,41 +182,74 @@ impl RequestMetrics {
     }
 }
 
-pub fn render_html(metrics: &RequestMetrics) -> String {
-    let mut pills = metrics
-        .entries
-        .iter()
-        .map(|entry| {
-            format!(
-                r#"<span class="ws-debugbar-pill">{label}: {duration} ms</span>"#,
-                label = html_escape(&entry.label),
-                duration = entry.duration_ms
-            )
-        })
-        .collect::<Vec<_>>();
-    if !metrics.tasks.is_empty() {
-        pills.push(format!(
-            r#"<span class="ws-debugbar-pill">Tasks: {count}</span>"#,
-            count = metrics.tasks.len()
-        ));
-    }
-    if !metrics.queries.is_empty() {
-        pills.push(format!(
-            r#"<span class="ws-debugbar-pill">Queries: {count}</span>"#,
-            count = metrics.queries.len()
-        ));
-    }
-    let pills = pills.join("");
+pub fn metrics_to_json(metrics: &RequestMetrics) -> serde_json::Value {
+    serde_json::json!({
+        "requestPath": metrics.request_path,
+        "routeFile": metrics
+            .route_file
+            .as_ref()
+            .map(|file| file.display().to_string())
+            .unwrap_or_default(),
+        "entries": metrics
+            .entries
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "label": entry.label,
+                    "duration": entry.duration_ms,
+                    "detail": entry.detail.clone().unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "tasks": metrics
+            .tasks
+            .iter()
+            .map(|task| {
+                serde_json::json!({
+                    "label": task.label,
+                    "kind": task_kind_name(task.kind),
+                    "startMs": task.start_ms,
+                    "durationMs": task.duration_ms,
+                })
+            })
+            .collect::<Vec<_>>(),
+        "queries": metrics
+            .queries
+            .iter()
+            .map(|query| {
+                serde_json::json!({
+                    "label": query.label,
+                    "source": query.source.as_str(),
+                    "sql": query.sql,
+                    "params": format_params(&query.params),
+                    "duration": query.duration_ms,
+                    "status": if query.success { "ok" } else { "error" },
+                    "error": query.error.clone().unwrap_or_default(),
+                })
+            })
+            .collect::<Vec<_>>(),
+        "total": metrics.total_ms,
+    })
+}
 
-    let panel = render_devtools_panel(metrics).unwrap_or_else(|error| {
-        format!(
-            r#"<p class="ws-debugbar-empty">Devtools failed to render: {}</p>"#,
-            html_escape(&error)
-        )
-    });
+fn task_kind_name(kind: TaskKind) -> &'static str {
+    match kind {
+        TaskKind::Model => "model",
+        TaskKind::Db => "db",
+        TaskKind::Sleep => "sleep",
+        TaskKind::Fetch => "fetch",
+        TaskKind::Timeout => "timeout",
+        TaskKind::Spawn => "spawn",
+        TaskKind::Await => "await",
+    }
+}
+
+pub fn render_html(metrics: &RequestMetrics) -> String {
+    let metrics_json = metrics_to_json(metrics).to_string();
 
     format!(
-        r#"<div id="webscript-debugbar" class="ws-debugbar">
+        r#"<script type="application/json" id="ws-request-metrics">{metrics_json}</script>
+<div id="webscript-debugbar" class="ws-debugbar">
 <style>
 .ws-debugbar {{
   position: fixed;
@@ -252,8 +268,28 @@ pub fn render_html(metrics: &RequestMetrics) -> String {
   padding: 6px 12px;
   background: #1e1f22;
   border-top: 1px solid #3a3b3f;
-  cursor: pointer;
   user-select: none;
+}}
+.ws-debugbar-summary[data-ws-debugbar-toggle] {{
+  cursor: pointer;
+}}
+.ws-debugbar-path {{
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}}
+.ws-debugbar-session-pill {{
+  cursor: pointer;
+}}
+.ws-debugbar-session-row {{
+  cursor: pointer;
+}}
+.ws-debugbar-session-row[aria-current="true"] {{
+  background: #2b2d31;
+}}
+.ws-debugbar-session-row:hover {{
+  background: #303238;
 }}
 .ws-debugbar-brand {{
   font-weight: 600;
@@ -398,158 +434,17 @@ pub fn render_html(metrics: &RequestMetrics) -> String {
   word-break: break-word;
 }}
 </style>
-<div class="ws-debugbar-summary" data-ws-debugbar-toggle>
+<div class="ws-debugbar-summary" data-ws-debugbar-summary data-ws-debugbar-toggle>
   <span class="ws-debugbar-brand">WebScript</span>
   <span class="ws-debugbar-pill ws-debugbar-total">Total: {total} ms</span>
-  {pills}
   <span class="ws-debugbar-toggle">&#9650;</span>
 </div>
-<div class="ws-debugbar-panel">
-  {panel}
-</div>
-<script>
-(() => {{
-  const bar = document.getElementById("webscript-debugbar");
-  const toggle = bar?.querySelector("[data-ws-debugbar-toggle]");
-  toggle?.addEventListener("click", () => bar.classList.toggle("open"));
-}})();
-</script>
+<div class="ws-debugbar-panel"></div>
+<script>{devtools_script}</script>
 </div>"#,
         total = metrics.total_ms,
-        pills = pills,
-        panel = panel
-    )
-}
-
-fn render_devtools_panel(metrics: &RequestMetrics) -> Result<String, String> {
-    let component = parser::parse(DEVTOOLS_COMPONENT).map_err(|error| error.message)?;
-    let page = parser::parse(DEVTOOLS_PAGE).map_err(|error| error.message)?;
-    let mut components = render::ComponentRegistry::new();
-    components.insert("WebScriptDevtools".to_string(), component);
-
-    let runtime = WebRuntime::new();
-    let output = render::render_with_components(&page, &metrics_scope(metrics), &components, &runtime)
-        .map_err(|error| error.message)?;
-    let style_fragment = style::render_style_tags(&output.global_styles, &output.scoped_styles);
-    let html = style::inject_styles(&output.html, &style_fragment);
-    let scripts = output
-        .islands
-        .iter()
-        .map(client::render_island_script)
-        .collect::<String>();
-    Ok(client::inject_client_scripts(&html, &scripts))
-}
-
-fn metrics_scope(metrics: &RequestMetrics) -> render::Scope {
-    let mut scope = render::Scope::new();
-    scope.insert(
-        "requestPath".to_string(),
-        Value::String(metrics.request_path.clone()),
-    );
-    scope.insert(
-        "routeFile".to_string(),
-        Value::String(
-            metrics
-                .route_file
-                .as_ref()
-                .map(|file| file.display().to_string())
-                .unwrap_or_default(),
-        ),
-    );
-    scope.insert("entries".to_string(), timing_entries_value(&metrics.entries));
-    let timeline_ms = timeline_ms(&metrics.tasks, metrics.total_ms);
-    scope.insert("tasks".to_string(), task_entries_value(&metrics.tasks, timeline_ms));
-    scope.insert("ticks".to_string(), tick_entries_value(timeline_ms));
-    scope.insert("queries".to_string(), query_entries_value(&metrics.queries));
-    scope.insert("total".to_string(), Value::Int(metrics.total_ms as i64));
-    scope
-}
-
-fn timing_entries_value(entries: &[TimingEntry]) -> Value {
-    Value::Array {
-        element_type: "object".to_string(),
-        values: entries
-            .iter()
-            .map(|entry| {
-                object_value([
-                    ("label", Value::String(entry.label.clone())),
-                    ("duration", Value::Int(entry.duration_ms as i64)),
-                    (
-                        "detail",
-                        Value::String(entry.detail.clone().unwrap_or_default()),
-                    ),
-                ])
-            })
-            .collect(),
-    }
-}
-
-fn task_entries_value(tasks: &[AsyncTaskSpan], timeline_ms: u64) -> Value {
-    Value::Array {
-        element_type: "object".to_string(),
-        values: tasks
-            .iter()
-            .map(|task| {
-                let left = (task.start_ms as f64 / timeline_ms as f64) * 100.0;
-                let width = ((task.duration_ms as f64 / timeline_ms as f64) * 100.0).max(0.4);
-                let title = format!("{} - {} ms", task.label, task.duration_ms);
-                object_value([
-                    ("label", Value::String(truncate_gantt_label(&task.label, 80))),
-                    ("title", Value::String(title)),
-                    ("cssClass", Value::String(task.kind.css_class().to_string())),
-                    (
-                        "style",
-                        Value::String(format!("left:{left:.2}%;width:{width:.2}%")),
-                    ),
-                ])
-            })
-            .collect(),
-    }
-}
-
-fn tick_entries_value(timeline_ms: u64) -> Value {
-    Value::Array {
-        element_type: "object".to_string(),
-        values: gantt_ticks(timeline_ms)
-            .into_iter()
-            .map(|ms| {
-                let left = (ms as f64 / timeline_ms as f64) * 100.0;
-                object_value([
-                    ("label", Value::String(format!("{ms} ms"))),
-                    ("style", Value::String(format!("left:{left:.2}%"))),
-                ])
-            })
-            .collect(),
-    }
-}
-
-fn query_entries_value(queries: &[DbQueryEntry]) -> Value {
-    Value::Array {
-        element_type: "object".to_string(),
-        values: queries
-            .iter()
-            .map(|query| {
-                let status = if query.success { "ok" } else { "error" };
-                object_value([
-                    ("label", Value::String(query.label.clone())),
-                    ("source", Value::String(query.source.as_str().to_string())),
-                    ("sql", Value::String(query.sql.clone())),
-                    ("params", Value::String(format_params(&query.params))),
-                    ("duration", Value::Int(query.duration_ms as i64)),
-                    ("status", Value::String(status.to_string())),
-                    ("error", Value::String(query.error.clone().unwrap_or_default())),
-                ])
-            })
-            .collect(),
-    }
-}
-
-fn object_value<const N: usize>(fields: [(&str, Value); N]) -> Value {
-    Value::Object(
-        fields
-            .into_iter()
-            .map(|(name, value)| (name.to_string(), value))
-            .collect::<BTreeMap<_, _>>(),
+        metrics_json = metrics_json,
+        devtools_script = DEVTOOLS_CLIENT_SCRIPT,
     )
 }
 
@@ -558,16 +453,6 @@ fn format_params(params: &[String]) -> String {
         return String::new();
     }
     params.join(", ")
-}
-
-fn timeline_ms(tasks: &[AsyncTaskSpan], total_ms: u64) -> u64 {
-    tasks
-        .iter()
-        .map(|task| task.start_ms.saturating_add(task.duration_ms))
-        .max()
-        .unwrap_or(0)
-        .max(total_ms)
-        .max(1)
 }
 
 fn render_gantt(tasks: &[AsyncTaskSpan], total_ms: u64) -> String {
@@ -678,14 +563,14 @@ fn truncate_gantt_label(value: &str, max_len: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        render_gantt, render_html, AsyncTaskSpan, DbQueryEntry, QuerySource, RequestMetrics,
-        TaskKind, TaskTrace,
+        metrics_to_json, render_gantt, render_html, AsyncTaskSpan, DbQueryEntry, QuerySource,
+        RequestMetrics, TaskKind, TaskTrace,
     };
     use std::path::PathBuf;
     use std::time::Duration;
 
     #[test]
-    fn render_html_includes_timing_labels_and_values() {
+    fn render_html_includes_metrics_payload_and_shell() {
         let mut metrics = RequestMetrics::new("/posts");
         metrics.push("Route", Duration::from_millis(4), None);
         metrics.push("Components", Duration::from_millis(3), None);
@@ -694,29 +579,29 @@ mod tests {
 
         let html = render_html(&metrics);
 
-        assert!(html.contains("Route: 4 ms"));
-        assert!(html.contains("Components: 3 ms"));
-        assert!(html.contains("Render: 5 ms"));
+        assert!(html.contains(r#"id="ws-request-metrics""#));
+        assert!(html.contains(r#""requestPath":"/posts""#));
+        assert!(html.contains(r#""label":"Route""#));
+        assert!(html.contains(r#""duration":4"#));
         assert!(html.contains("Total: 12 ms"));
-        assert!(html.contains("Timings"));
-        assert!(html.contains("Async Timeline"));
-        assert!(html.contains("Queries"));
-        assert!(html.contains("/posts"));
+        assert!(html.contains("webscript-debugbar"));
+        assert!(html.contains("WebScript.devtools"));
         assert!(html.contains("color-scheme: dark"));
         assert!(html.contains(".ws-debugbar td"));
         assert!(html.contains("color: #e8eaed"));
     }
 
     #[test]
-    fn render_html_includes_route_file_when_provided() {
+    fn metrics_to_json_includes_route_file_when_provided() {
         let mut metrics = RequestMetrics::new("/");
         metrics.route_file = Some(PathBuf::from("app/pages/index.web"));
         metrics.set_total(Duration::from_millis(1));
 
-        let html = render_html(&metrics);
+        let json = metrics_to_json(&metrics);
 
-        assert!(html.contains("app/pages/index.web"));
-        assert!(html.contains("Route file"));
+        assert_eq!(json["requestPath"], "/");
+        assert_eq!(json["routeFile"], "app/pages/index.web");
+        assert_eq!(json["total"], 1);
     }
 
     #[test]
@@ -753,7 +638,7 @@ mod tests {
     }
 
     #[test]
-    fn render_html_includes_query_rows() {
+    fn metrics_to_json_includes_query_rows() {
         let mut metrics = RequestMetrics::new("/todos/live");
         metrics.queries.push(DbQueryEntry {
             label: "Todo.all".to_string(),
@@ -775,12 +660,13 @@ mod tests {
         });
         metrics.set_total(Duration::from_millis(6));
 
-        let html = render_html(&metrics);
+        let json = metrics_to_json(&metrics);
+        let queries = json["queries"].as_array().expect("queries array");
 
-        assert!(html.contains("Queries: 2"));
-        assert!(html.contains("SELECT * FROM Todo ORDER BY createdAt"));
-        assert!(html.contains("SELECT nope FROM Missing"));
-        assert!(html.contains("no such table: Missing"));
+        assert_eq!(queries.len(), 2);
+        assert_eq!(queries[0]["sql"], "SELECT * FROM Todo ORDER BY createdAt");
+        assert_eq!(queries[1]["sql"], "SELECT nope FROM Missing");
+        assert_eq!(queries[1]["error"], "no such table: Missing");
     }
 
     #[test]

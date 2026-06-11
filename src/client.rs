@@ -166,13 +166,32 @@ WebScript.action = async (url, name, input) => {
     body = new URLSearchParams({ _action: name }).toString();
     headers["Content-Type"] = "application/x-www-form-urlencoded";
   }
+  const started = performance.now();
   const response = await fetch(url, {
     method: "POST",
     headers,
     body,
     credentials: "same-origin",
   });
+  const clientDurationMs = performance.now() - started;
   const payload = await response.json().catch(() => ({}));
+  if (WebScript.devtools?.record) {
+    WebScript.devtools.record(
+      {
+        requestPath: `${url}#${name}`,
+        routeFile: "",
+        entries: [],
+        tasks: [],
+        queries: [],
+        total: Math.round(clientDurationMs),
+      },
+      {
+        kind: response.ok ? "action" : "action-error",
+        path: `${url}#${name}`,
+        clientDurationMs,
+      },
+    );
+  }
   if (!response.ok) {
     throw new Error(payload.error ?? "Action failed");
   }
@@ -243,7 +262,7 @@ WebScript.extractPageScripts = (doc) => {
   const scripts = [];
   for (const script of doc.body.querySelectorAll("script")) {
     const src = script.getAttribute("src") || "";
-    if (src.endsWith("/.web/runtime.js")) {
+    if (src.endsWith("/.web/runtime.js") || src.endsWith("/.web/dev-client.js")) {
       script.remove();
       continue;
     }
@@ -266,10 +285,12 @@ WebScript.navigate = async (url, options = {}) => {
     window.location.assign(resolved.href);
     return;
   }
+  const started = performance.now();
   const response = await fetch(resolved.pathname + resolved.search, {
     headers: { Accept: "text/html" },
     credentials: "same-origin",
   });
+  const clientDurationMs = performance.now() - started;
   if (!response.ok) {
     window.location.assign(resolved.href);
     return;
@@ -284,6 +305,8 @@ WebScript.navigate = async (url, options = {}) => {
     window.location.assign(resolved.href);
     return;
   }
+  const metrics = WebScript.devtools?.parseMetricsNode?.(doc);
+  WebScript.devtools?.stripDebugbar?.(doc);
   const scripts = WebScript.extractPageScripts(doc);
   const apply = () => {
     if (!WebScript.swapOutlet(doc)) {
@@ -299,6 +322,13 @@ WebScript.navigate = async (url, options = {}) => {
   if (!ok) {
     window.location.assign(resolved.href);
     return;
+  }
+  if (metrics && WebScript.devtools?.record) {
+    WebScript.devtools.record(metrics, {
+      kind: "navigation",
+      path: resolved.pathname + resolved.search,
+      clientDurationMs,
+    });
   }
   if (replace) {
     history.replaceState({}, "", resolved.href);
