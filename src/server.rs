@@ -5,6 +5,7 @@ use crate::diagnostic::{self, FileDiagnostic};
 use crate::project;
 use crate::render;
 use crate::runtime::WebRuntime;
+use crate::style;
 use crate::tailwind;
 use std::fs;
 use std::io::{Read, Write};
@@ -121,6 +122,40 @@ fn handle_connection(
             client::client_runtime_script(),
         )
         .map_err(io_diagnostic)?;
+        return Ok(());
+    }
+    if path == style::STYLESHEET_PATH {
+        if method != "GET" {
+            write_response(&mut stream, 405, "text/plain", "Method Not Allowed")
+                .map_err(|error| io_diagnostic(error))?;
+            return Ok(());
+        }
+        let route_path = query_value(query, style::STYLESHEET_ROUTE_PARAM).unwrap_or_else(|| "/".to_string());
+        let (_, session, _) =
+            load_session(sessions, request.headers.get("cookie").map(String::as_str))
+                .map_err(io_diagnostic)?;
+        let mut project_runtime = project_runtime
+            .lock()
+            .map_err(|_| io_diagnostic("project runtime lock poisoned".to_string()))?;
+        match render_page_styles(
+            &mut project_runtime,
+            web_runtime,
+            runtime_handle,
+            &route_path,
+            session,
+        ) {
+            Ok(css) => {
+                write_response(&mut stream, 200, "text/css; charset=utf-8", &css)
+                    .map_err(io_diagnostic)?;
+            }
+            Err(None) => {
+                write_response(&mut stream, 404, "text/plain", "Not Found")
+                    .map_err(|error| io_diagnostic(error))?;
+            }
+            Err(Some(diagnostic)) => {
+                return respond_diagnostic(&mut stream, diagnostic, None);
+            }
+        }
         return Ok(());
     }
     if path == tailwind::STYLESHEET_PATH {
@@ -300,6 +335,7 @@ fn handle_connection(
                 if let Err(error) = write_streaming_defer_response(
                     &mut stream,
                     root,
+                    path,
                     &parsed,
                     &components,
                     &request_runtime,
@@ -345,7 +381,7 @@ fn handle_connection(
                 metrics.queries = trace.queries().to_vec();
             }
             metrics.set_total(started.elapsed());
-            let html = finalize_page_html(root, &output, false);
+            let html = finalize_page_html(root, path, &output, false);
             write_response_with_headers(
                 &mut stream,
                 200,
@@ -691,15 +727,80 @@ fn public_asset(root: &Path, request_path: &str) -> Result<Option<String>, Strin
     }
 }
 
-fn finalize_page_html(root: &Path, output: &render::RenderOutput, defer_bootstrap: bool) -> String {
-    let style_fragment =
-        crate::style::render_style_tags(&output.global_styles, &output.scoped_styles);
-    let html = if tailwind::enabled(root) {
-        crate::style::inject_head_fragment(&output.html, tailwind::STYLESHEET_LINK)
-    } else {
-        output.html.clone()
+fn render_page_styles(
+    project_runtime: &mut project::ProjectRuntime,
+    web_runtime: &WebRuntime,
+    runtime_handle: &Handle,
+    route_path: &str,
+    session: render::Scope,
+) -> Result<String, Option<FileDiagnostic>> {
+    let (route_file, source, parsed, params) = match project_runtime.load_route_with_source(route_path) {
+        Ok(Some(value)) => value,
+        Ok(None) => return Err(None),
+        Err(diagnostic) => return Err(Some(diagnostic)),
     };
-    let html = crate::style::inject_styles(&html, &style_fragment);
+
+    let components = project_runtime
+        .load_components()
+        .map_err(Some)?;
+    let layouts = project_runtime
+        .load_layouts()
+        .map_err(Some)?;
+    let default_layout = project_runtime.default_layout();
+
+    let mut render_params = params;
+    render_params.insert(
+        "session".to_string(),
+        crate::parser::Value::Object(session),
+    );
+    let task_trace = Arc::new(Mutex::new(TaskTrace::new()));
+    let request_runtime = web_runtime.for_request(Arc::clone(&task_trace));
+    let uses_defer =
+        render::page_uses_defer(&parsed, &layouts, default_layout.as_deref());
+
+    let styles = if uses_defer {
+        let streaming = runtime_handle
+            .block_on(render::render_page_streaming(
+                &parsed,
+                &render_params,
+                &components,
+                &layouts,
+                default_layout.as_deref(),
+                &request_runtime,
+            ))
+            .map_err(|error| Some(FileDiagnostic::new(route_file, source, error)))?;
+        style::render_stylesheet(
+            &streaming.shell.global_styles,
+            &streaming.shell.scoped_styles,
+        )
+    } else {
+        let output = runtime_handle
+            .block_on(render::render_page_async(
+                &parsed,
+                &render_params,
+                &components,
+                &layouts,
+                default_layout.as_deref(),
+                &request_runtime,
+            ))
+            .map_err(|error| Some(FileDiagnostic::new(route_file, source, error)))?;
+        style::render_stylesheet(&output.global_styles, &output.scoped_styles)
+    };
+
+    Ok(styles)
+}
+
+fn finalize_page_html(
+    root: &Path,
+    route_path: &str,
+    output: &render::RenderOutput,
+    defer_bootstrap: bool,
+) -> String {
+    let mut head_fragments = style::stylesheet_link(route_path);
+    if tailwind::enabled(root) {
+        head_fragments.push_str(tailwind::STYLESHEET_LINK);
+    }
+    let html = style::inject_head_fragment(&output.html, &head_fragments);
     let client_scripts = output
         .islands
         .iter()
@@ -731,6 +832,7 @@ fn inject_defer_bootstrap(html: &str) -> String {
 fn write_streaming_defer_response(
     stream: &mut TcpStream,
     root: &Path,
+    route_path: &str,
     file: &crate::parser::WebFile,
     components: &render::ComponentRegistry,
     runtime: &WebRuntime,
@@ -740,7 +842,7 @@ fn write_streaming_defer_response(
     metrics: &RequestMetrics,
     runtime_handle: &Handle,
 ) -> Result<(), String> {
-    let shell_html = finalize_page_html(root, &streaming.shell, true);
+    let shell_html = finalize_page_html(root, route_path, &streaming.shell, true);
     let shell_html = dev::DevServer::inject_dev_tools(&shell_html, Some(metrics));
     begin_chunked_response(
         stream,

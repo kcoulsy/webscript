@@ -1,0 +1,6 @@
+@page "/page-a"
+
+<main>
+  <h1>Page A</h1>
+  <Counter initial={1} label="A" />
+</main>

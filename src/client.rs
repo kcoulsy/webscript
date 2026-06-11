@@ -177,11 +177,175 @@ WebScript.action = async (url, name, input) => {
     throw new Error(payload.error ?? "Action failed");
   }
   if (payload.redirect) {
-    window.location.assign(payload.redirect);
+    await WebScript.navigate(payload.redirect);
     return null;
   }
   return payload.data ?? null;
 };
+WebScript.runScripts = (scripts) => {
+  for (const code of scripts) {
+    try {
+      (0, eval)(code);
+    } catch (error) {
+      console.error("WebScript script execution failed", error);
+    }
+  }
+};
+WebScript.mergeHead = (doc) => {
+  const title = doc.querySelector("title")?.textContent;
+  if (title) {
+    document.title = title;
+  }
+  const scopedKeys = new Set();
+  const collectScoped = (root) => {
+    for (const style of root.querySelectorAll("style[data-ws-scoped]")) {
+      scopedKeys.add(style.getAttribute("data-ws-scoped"));
+    }
+  };
+  collectScoped(doc.head);
+  collectScoped(doc.body);
+  for (const style of document.querySelectorAll("style[data-ws-scoped]")) {
+    const key = style.getAttribute("data-ws-scoped");
+    if (!scopedKeys.has(key)) {
+      style.remove();
+    }
+  }
+  for (const style of doc.querySelectorAll("style[data-ws-scoped]")) {
+    const key = style.getAttribute("data-ws-scoped");
+    const existing = document.querySelector(`style[data-ws-scoped="${key}"]`);
+    if (existing) {
+      if (existing.textContent !== style.textContent) {
+        existing.textContent = style.textContent;
+      }
+      continue;
+    }
+    document.body.appendChild(style.cloneNode(true));
+  }
+};
+WebScript.swapRegion = (selector, doc) => {
+  const current = document.querySelector(selector);
+  const next = doc.querySelector(selector);
+  if (!current || !next) {
+    return;
+  }
+  current.replaceWith(next.cloneNode(true));
+};
+WebScript.swapOutlet = (doc) => {
+  const current = document.querySelector("[data-ws-outlet]");
+  const next = doc.querySelector("[data-ws-outlet]");
+  if (!current || !next) {
+    return false;
+  }
+  current.replaceWith(next.cloneNode(true));
+  return true;
+};
+WebScript.extractPageScripts = (doc) => {
+  const scripts = [];
+  for (const script of doc.body.querySelectorAll("script")) {
+    const src = script.getAttribute("src") || "";
+    if (src.endsWith("/.web/runtime.js")) {
+      script.remove();
+      continue;
+    }
+    if (src) {
+      script.remove();
+      continue;
+    }
+    const code = script.textContent?.trim();
+    if (code) {
+      scripts.push(code);
+    }
+    script.remove();
+  }
+  return scripts;
+};
+WebScript.navigate = async (url, options = {}) => {
+  const replace = options.replace === true;
+  const resolved = new URL(url, window.location.href);
+  if (resolved.origin !== window.location.origin) {
+    window.location.assign(resolved.href);
+    return;
+  }
+  const response = await fetch(resolved.pathname + resolved.search, {
+    headers: { Accept: "text/html" },
+    credentials: "same-origin",
+  });
+  if (!response.ok) {
+    window.location.assign(resolved.href);
+    return;
+  }
+  const html = await response.text();
+  if (html.includes("data-web-defer")) {
+    window.location.assign(resolved.href);
+    return;
+  }
+  const doc = new DOMParser().parseFromString(html, "text/html");
+  if (!doc.querySelector("[data-ws-outlet]")) {
+    window.location.assign(resolved.href);
+    return;
+  }
+  const scripts = WebScript.extractPageScripts(doc);
+  const apply = () => {
+    if (!WebScript.swapOutlet(doc)) {
+      return false;
+    }
+    WebScript.swapRegion("[data-ws-nav-region]", doc);
+    WebScript.mergeHead(doc);
+    WebScript.runScripts(scripts);
+    window.scrollTo(0, 0);
+    return true;
+  };
+  const ok = apply();
+  if (!ok) {
+    window.location.assign(resolved.href);
+    return;
+  }
+  if (replace) {
+    history.replaceState({}, "", resolved.href);
+  } else {
+    history.pushState({}, "", resolved.href);
+  }
+};
+WebScript.navigate.init = () => {
+  if (WebScript.navigate._initialized) {
+    return;
+  }
+  WebScript.navigate._initialized = true;
+  let busy = false;
+  document.addEventListener("click", (event) => {
+    if (event.defaultPrevented) return;
+    if (event.button !== 0) return;
+    if (event.metaKey || event.ctrlKey || event.shiftKey || event.altKey) return;
+    const anchor = event.target.closest("a[href]");
+    if (!anchor) return;
+    if (anchor.target === "_blank") return;
+    if (anchor.hasAttribute("download")) return;
+    if (anchor.getAttribute("data-ws-nav") === "reload") return;
+    if (anchor.closest('[data-ws-nav="reload"]')) return;
+    const href = anchor.getAttribute("href");
+    if (!href || href.startsWith('#')) return;
+    const target = new URL(href, window.location.href);
+    if (target.origin !== window.location.origin) return;
+    event.preventDefault();
+    if (busy) return;
+    busy = true;
+    WebScript.navigate(target.href).finally(() => {
+      busy = false;
+    });
+  });
+  window.addEventListener("popstate", () => {
+    if (busy) return;
+    busy = true;
+    WebScript.navigate(window.location.href, { replace: true }).finally(() => {
+      busy = false;
+    });
+  });
+};
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", () => WebScript.navigate.init());
+} else {
+  WebScript.navigate.init();
+}
 "#
 }
 
@@ -438,10 +602,6 @@ pub fn format_defer_chunk_script(id: &str, html: &str) -> String {
 }
 
 pub fn inject_client_scripts(html: &str, scripts: &str) -> String {
-    if scripts.is_empty() {
-        return html.to_string();
-    }
-
     let runtime_tag = format!(r#"<script src="{RUNTIME_PATH}"></script>"#);
     let mut fragment = runtime_tag;
     fragment.push_str(scripts);

@@ -66,6 +66,28 @@ The framework can serve a built-in client runtime:
 
 This runtime hydrates small interactive islands without requiring a bundler.
 
+## Soft Navigation
+
+Same-origin link clicks are intercepted by `WebScript.navigate` in `/.web/runtime.js`. The runtime:
+
+1. Fetches the next page as HTML
+2. Swaps only the `[data-ws-outlet]` region (page content at the layout `<slot />`)
+3. Optionally swaps `[data-ws-nav-region]` when layout chrome changes (for example login/logout links)
+4. Updates the document title and page-scoped styles
+5. Re-runs island hydration scripts for the new page
+
+Page island state is reset on each navigation. Layout chrome outside the outlet is left in place.
+
+Opt out of soft navigation when needed:
+
+```html
+<a href="/defer-demo" data-ws-nav="reload">Defer demo</a>
+```
+
+`@defer` pages automatically fall back to a full document load because streaming placeholders are not swapped client-side yet.
+
+`WebScript.action()` redirects use soft navigation when possible.
+
 ## `@client`
 
 Use `@client` for browser state and event handlers:

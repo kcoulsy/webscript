@@ -1,10 +1,21 @@
 export interface IslandQuery {
   component: string;
   index: number;
+  /** Page route used to build the full island id (e.g. `/counter`). */
+  route?: string;
 }
 
-export function islandSelector({ component, index }: IslandQuery): string {
-  return `[data-ws-island="${component}-${index}"]`;
+function islandRouteScope(route: string): string {
+  const trimmed = route.replace(/^\//, "");
+  return trimmed.length === 0 ? "_root" : trimmed.replace(/\//g, "_");
+}
+
+export function islandSelector({ component, index, route }: IslandQuery): string {
+  if (route) {
+    const scope = islandRouteScope(route);
+    return `[data-ws-island="${scope}-${component}-${index}"]`;
+  }
+  return `[data-ws-island$="-${component}-${index}"]`;
 }
 
 export function signalTextSelector(signal: string): string {

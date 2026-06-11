@@ -1,0 +1,11 @@
+@layout AppLayout {
+}
+
+<header data-ws-nav-region>
+  <nav aria-label="Main">
+    <a href="/page-a">Page A</a>
+    <a href="/page-b">Page B</a>
+  </nav>
+</header>
+
+<slot />

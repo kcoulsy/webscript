@@ -117,7 +117,7 @@ pub fn render_with_components(
     }
     let mut scope = base_scope_for(file, params);
     evaluate_lets(&file.lets, &mut scope)?;
-    let mut context = RenderContext::default();
+    let mut context = page_render_context(file);
     let mut island = None;
     let mut forward_state = None;
     let shadowed = BTreeSet::new();
@@ -200,9 +200,10 @@ pub async fn render_page_async(
 
     let page_scope_id = scope_id_for_file(file);
     let page_html = apply_file_styles(file, &page_scope_id, &mut context, page_html);
+    let page_outlet = wrap_page_outlet(&page_html);
 
     let Some(layout_name) = layout_name else {
-        return Ok(render_output(page_html, &context));
+        return Ok(render_output(page_outlet, &context));
     };
 
     let layout_file = layouts.get(layout_name).ok_or_else(|| {
@@ -225,7 +226,7 @@ pub async fn render_page_async(
         runtime,
         &mut context,
         &mut layout_island,
-        Some(&page_html),
+        Some(&page_outlet),
         &mut forward_state,
         &shadowed,
         &mut defer_state,
@@ -277,6 +278,7 @@ pub async fn render_page_streaming(
 
     let page_scope_id = scope_id_for_file(file);
     let page_html = apply_file_styles(file, &page_scope_id, &mut context, page_html);
+    let page_outlet = wrap_page_outlet(&page_html);
 
     let html = if let Some(layout_name) = layout_name {
         let layout_file = layouts.get(layout_name).ok_or_else(|| {
@@ -296,7 +298,7 @@ pub async fn render_page_streaming(
             runtime,
             &mut context,
             &mut layout_island,
-            Some(&page_html),
+            Some(&page_outlet),
             &mut forward_state,
             &shadowed,
             &mut defer_state,
@@ -304,7 +306,7 @@ pub async fn render_page_streaming(
         let layout_scope_id = scope_id_for_file(layout_file);
         apply_file_styles(layout_file, &layout_scope_id, &mut context, html)
     } else {
-        page_html
+        page_outlet
     };
 
     let deferred = defer_state.map(|state| state.blocks).unwrap_or_default();
@@ -530,6 +532,19 @@ fn page_render_context(file: &WebFile) -> RenderContext {
         page_actions,
         ..RenderContext::default()
     }
+}
+
+fn island_route_scope(route: &str) -> String {
+    let trimmed = route.trim_start_matches('/');
+    if trimmed.is_empty() {
+        "_root".to_string()
+    } else {
+        trimmed.replace('/', "_")
+    }
+}
+
+fn wrap_page_outlet(page_html: &str) -> String {
+    format!(r#"<div data-ws-outlet>{page_html}</div>"#)
 }
 
 fn scope_id_for_file(file: &WebFile) -> String {
@@ -1625,7 +1640,12 @@ fn render_client_component(
         .entry(call.name.clone())
         .and_modify(|count| *count += 1)
         .or_insert(0);
-    let island_id = format!("{}-{}", call.name, island_index);
+    let island_id = format!(
+        "{}-{}-{}",
+        island_route_scope(&context.page_route),
+        call.name,
+        island_index
+    );
 
     let mut signal_bindings = Vec::new();
     let mut render_scope = component_scope.clone();
@@ -2602,7 +2622,7 @@ mod tests {
         .await
         .expect("rendered");
 
-        assert_eq!(output.html, "<h1>Loaded</h1>");
+        assert_eq!(output.html, "<div data-ws-outlet><h1>Loaded</h1></div>");
     }
 
     #[tokio::test]
@@ -2687,7 +2707,7 @@ mod tests {
         let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
             .expect("rendered");
 
-        assert!(output.html.contains("data-ws-island=\"Counter-0\""));
+        assert!(output.html.contains("data-ws-island=\"counter-Counter-0\""));
         assert!(output.html.contains("data-ws-click=\"0\""));
         assert!(output.html.contains("data-ws-click=\"1\""));
         assert!(

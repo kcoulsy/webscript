@@ -1,5 +1,8 @@
 use std::collections::BTreeMap;
 
+pub const STYLESHEET_PATH: &str = "/.web/styles.css";
+pub const STYLESHEET_ROUTE_PARAM: &str = "route";
+
 pub fn scope_css(css: &str, scope_attr: &str) -> String {
     let prefix = format!(r#"[data-ws-style="{scope_attr}"] "#);
     let mut output = String::new();
@@ -88,6 +91,50 @@ fn escape_style_content(css: &str) -> String {
     css.replace("</style>", "<\\/style>")
 }
 
+pub fn render_stylesheet(global: &[String], scoped: &BTreeMap<String, String>) -> String {
+    let mut css = String::new();
+
+    for block in global {
+        let trimmed = block.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        css.push_str(trimmed);
+        css.push('\n');
+    }
+
+    for block in scoped.values() {
+        let trimmed = block.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        css.push_str(trimmed);
+        css.push('\n');
+    }
+
+    css
+}
+
+pub fn stylesheet_link(route: &str) -> String {
+    format!(
+        r#"<link rel="stylesheet" href="{STYLESHEET_PATH}?{STYLESHEET_ROUTE_PARAM}={encoded}">"#,
+        encoded = url_encode_route(route)
+    )
+}
+
+fn url_encode_route(route: &str) -> String {
+    route
+        .bytes()
+        .map(|byte| match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (byte as char).to_string()
+            }
+            b' ' => "+".to_string(),
+            _ => format!("%{byte:02X}"),
+        })
+        .collect()
+}
+
 pub fn render_style_tags(global: &[String], scoped: &BTreeMap<String, String>) -> String {
     let mut fragment = String::new();
 
@@ -169,6 +216,22 @@ mod tests {
         );
         assert!(scoped.contains("@media (min-width: 600px)"));
         assert!(scoped.contains(r#"[data-ws-style="Card"] .card"#));
+    }
+
+    #[test]
+    fn renders_plain_stylesheet() {
+        let mut scoped = BTreeMap::new();
+        scoped.insert("Counter".to_string(), ".x {}".to_string());
+        let css = render_stylesheet(&["body { margin: 0; }".to_string()], &scoped);
+        assert!(css.contains("body { margin: 0; }"));
+        assert!(css.contains(".x {}"));
+        assert!(!css.contains("<style"));
+    }
+
+    #[test]
+    fn encodes_route_in_stylesheet_link() {
+        let link = stylesheet_link("/todos/live");
+        assert!(link.contains(r#"href="/.web/styles.css?route=%2Ftodos%2Flive""#));
     }
 
     #[test]
