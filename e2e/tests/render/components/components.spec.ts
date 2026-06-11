@@ -6,8 +6,10 @@ test.describe("component rendering", () => {
     await open(page, workspace, "/preview", { hydrate: false });
     await expect(page.locator("main h1")).toHaveText("Post preview");
     await expect(page.getByRole("heading", { name: "Launch day" })).toBeVisible();
+    await expect(page.getByText("Variant compact")).toBeVisible();
     await expect(page.getByText("Rank 1")).toBeVisible();
     await expect(page.getByRole("heading", { name: "Draft notes" })).toBeVisible();
+    await expect(page.getByText("Variant default")).toBeVisible();
     await expect(page.getByText("Rank 2")).toBeVisible();
   });
 

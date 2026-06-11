@@ -1,6 +1,7 @@
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
 use crate::parser::Value;
+use crate::types;
 use std::collections::BTreeMap;
 
 pub type Env = BTreeMap<String, Value>;
@@ -692,7 +693,7 @@ fn execute_statement(
         } => {
             let value = expr::evaluate(value, scope, *line, *column)?;
             if let Some(type_name) = type_name {
-                if !type_names_match(&value.type_name(), type_name) {
+                if !types::value_matches_type(&value, type_name) {
                     return Err(type_mismatch(*line, *column, type_name, &value.type_name()));
                 }
             }
@@ -862,10 +863,6 @@ fn type_mismatch(line: usize, column: usize, expected: &str, found: &str) -> Dia
         format!("expected `{expected}`, found `{found}`"),
         None,
     )
-}
-
-fn type_names_match(actual: &str, expected: &str) -> bool {
-    actual == expected || (expected == "object" && (actual == "object" || actual.starts_with('{')))
 }
 
 fn parse_diagnostic_line(line: usize, message: impl Into<String>) -> Diagnostic {

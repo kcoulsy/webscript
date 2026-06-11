@@ -1,5 +1,24 @@
+use crate::parser::{self, Value};
+use crate::runtime::WebRuntime;
+use crate::{client, render, style};
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
+
+const DEVTOOLS_COMPONENT: &str = include_str!("devtools.web");
+const DEVTOOLS_PAGE: &str = r#"@page "/__webscript/devtools"
+@layout none
+
+<WebScriptDevtools
+  requestPath={requestPath}
+  routeFile={routeFile}
+  entries={entries}
+  tasks={tasks}
+  ticks={ticks}
+  queries={queries}
+  total={total}
+/>
+"#;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TaskKind {
@@ -34,10 +53,37 @@ pub struct AsyncTaskSpan {
     pub duration_ms: u64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QuerySource {
+    Raw,
+    Model,
+}
+
+impl QuerySource {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Raw => "raw",
+            Self::Model => "model",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DbQueryEntry {
+    pub label: String,
+    pub source: QuerySource,
+    pub sql: String,
+    pub params: Vec<String>,
+    pub duration_ms: u64,
+    pub success: bool,
+    pub error: Option<String>,
+}
+
 #[derive(Debug)]
 pub struct TaskTrace {
     origin: Instant,
     tasks: Vec<AsyncTaskSpan>,
+    queries: Vec<DbQueryEntry>,
 }
 
 impl TaskTrace {
@@ -45,6 +91,7 @@ impl TaskTrace {
         Self {
             origin: Instant::now(),
             tasks: Vec::new(),
+            queries: Vec::new(),
         }
     }
 
@@ -66,8 +113,41 @@ impl TaskTrace {
         }
     }
 
+    pub fn begin_query(
+        &mut self,
+        label: impl Into<String>,
+        source: QuerySource,
+        sql: impl Into<String>,
+        params: Vec<String>,
+    ) -> usize {
+        let index = self.queries.len();
+        self.queries.push(DbQueryEntry {
+            label: label.into(),
+            source,
+            sql: sql.into(),
+            params,
+            duration_ms: self.origin.elapsed().as_millis() as u64,
+            success: true,
+            error: None,
+        });
+        index
+    }
+
+    pub fn finish_query(&mut self, index: usize, success: bool, error: Option<String>) {
+        let end_ms = self.origin.elapsed().as_millis() as u64;
+        if let Some(query) = self.queries.get_mut(index) {
+            query.duration_ms = end_ms.saturating_sub(query.duration_ms).max(1);
+            query.success = success;
+            query.error = error;
+        }
+    }
+
     pub fn spans(&self) -> &[AsyncTaskSpan] {
         &self.tasks
+    }
+
+    pub fn queries(&self) -> &[DbQueryEntry] {
+        &self.queries
     }
 }
 
@@ -90,6 +170,7 @@ pub struct RequestMetrics {
     pub route_file: Option<PathBuf>,
     pub entries: Vec<TimingEntry>,
     pub tasks: Vec<AsyncTaskSpan>,
+    pub queries: Vec<DbQueryEntry>,
     pub total_ms: u64,
 }
 
@@ -100,6 +181,7 @@ impl RequestMetrics {
             route_file: None,
             entries: Vec::new(),
             tasks: Vec::new(),
+            queries: Vec::new(),
             total_ms: 0,
         }
     }
@@ -135,46 +217,20 @@ pub fn render_html(metrics: &RequestMetrics) -> String {
             count = metrics.tasks.len()
         ));
     }
+    if !metrics.queries.is_empty() {
+        pills.push(format!(
+            r#"<span class="ws-debugbar-pill">Queries: {count}</span>"#,
+            count = metrics.queries.len()
+        ));
+    }
     let pills = pills.join("");
 
-    let rows = metrics
-        .entries
-        .iter()
-        .map(|entry| {
-            let detail = entry
-                .detail
-                .as_ref()
-                .map(|value| {
-                    format!(
-                        r#"<td class="ws-debugbar-detail">{detail}</td>"#,
-                        detail = html_escape(value)
-                    )
-                })
-                .unwrap_or_else(|| r#"<td class="ws-debugbar-detail"></td>"#.to_string());
-
-            format!(
-                r#"<tr><td>{label}</td><td>{duration} ms</td>{detail}</tr>"#,
-                label = html_escape(&entry.label),
-                duration = entry.duration_ms,
-                detail = detail
-            )
-        })
-        .collect::<Vec<_>>()
-        .join("");
-
-    let route_row = metrics
-        .route_file
-        .as_ref()
-        .map(|file| {
-            format!(
-                r#"<tr><td>Route file</td><td colspan="2">{path}</td></tr>"#,
-                path = html_escape(&file.display().to_string())
-            )
-        })
-        .unwrap_or_default();
-
-    let request_path = html_escape(&metrics.request_path);
-    let gantt = render_gantt(&metrics.tasks, metrics.total_ms);
+    let panel = render_devtools_panel(metrics).unwrap_or_else(|error| {
+        format!(
+            r#"<p class="ws-debugbar-empty">Devtools failed to render: {}</p>"#,
+            html_escape(&error)
+        )
+    });
 
     format!(
         r#"<div id="webscript-debugbar" class="ws-debugbar">
@@ -333,6 +389,14 @@ pub fn render_html(metrics: &RequestMetrics) -> String {
   color: #9aa0a6;
   font-style: italic;
 }}
+.ws-debugbar-sql {{
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+  word-break: break-word;
+}}
+.ws-debugbar-error {{
+  color: #f28b82;
+  word-break: break-word;
+}}
 </style>
 <div class="ws-debugbar-summary" data-ws-debugbar-toggle>
   <span class="ws-debugbar-brand">WebScript</span>
@@ -341,18 +405,7 @@ pub fn render_html(metrics: &RequestMetrics) -> String {
   <span class="ws-debugbar-toggle">&#9650;</span>
 </div>
 <div class="ws-debugbar-panel">
-  <table>
-    <thead>
-      <tr><th>Phase</th><th>Time</th><th>Detail</th></tr>
-    </thead>
-    <tbody>
-      <tr><td>Request</td><td colspan="2">{request_path}</td></tr>
-      {route_row}
-      {rows}
-      <tr><td>Total</td><td colspan="2">{total} ms</td></tr>
-    </tbody>
-  </table>
-  {gantt}
+  {panel}
 </div>
 <script>
 (() => {{
@@ -364,11 +417,157 @@ pub fn render_html(metrics: &RequestMetrics) -> String {
 </div>"#,
         total = metrics.total_ms,
         pills = pills,
-        request_path = request_path,
-        route_row = route_row,
-        rows = rows,
-        gantt = gantt
+        panel = panel
     )
+}
+
+fn render_devtools_panel(metrics: &RequestMetrics) -> Result<String, String> {
+    let component = parser::parse(DEVTOOLS_COMPONENT).map_err(|error| error.message)?;
+    let page = parser::parse(DEVTOOLS_PAGE).map_err(|error| error.message)?;
+    let mut components = render::ComponentRegistry::new();
+    components.insert("WebScriptDevtools".to_string(), component);
+
+    let runtime = WebRuntime::new();
+    let output = render::render_with_components(&page, &metrics_scope(metrics), &components, &runtime)
+        .map_err(|error| error.message)?;
+    let style_fragment = style::render_style_tags(&output.global_styles, &output.scoped_styles);
+    let html = style::inject_styles(&output.html, &style_fragment);
+    let scripts = output
+        .islands
+        .iter()
+        .map(client::render_island_script)
+        .collect::<String>();
+    Ok(client::inject_client_scripts(&html, &scripts))
+}
+
+fn metrics_scope(metrics: &RequestMetrics) -> render::Scope {
+    let mut scope = render::Scope::new();
+    scope.insert(
+        "requestPath".to_string(),
+        Value::String(metrics.request_path.clone()),
+    );
+    scope.insert(
+        "routeFile".to_string(),
+        Value::String(
+            metrics
+                .route_file
+                .as_ref()
+                .map(|file| file.display().to_string())
+                .unwrap_or_default(),
+        ),
+    );
+    scope.insert("entries".to_string(), timing_entries_value(&metrics.entries));
+    let timeline_ms = timeline_ms(&metrics.tasks, metrics.total_ms);
+    scope.insert("tasks".to_string(), task_entries_value(&metrics.tasks, timeline_ms));
+    scope.insert("ticks".to_string(), tick_entries_value(timeline_ms));
+    scope.insert("queries".to_string(), query_entries_value(&metrics.queries));
+    scope.insert("total".to_string(), Value::Int(metrics.total_ms as i64));
+    scope
+}
+
+fn timing_entries_value(entries: &[TimingEntry]) -> Value {
+    Value::Array {
+        element_type: "object".to_string(),
+        values: entries
+            .iter()
+            .map(|entry| {
+                object_value([
+                    ("label", Value::String(entry.label.clone())),
+                    ("duration", Value::Int(entry.duration_ms as i64)),
+                    (
+                        "detail",
+                        Value::String(entry.detail.clone().unwrap_or_default()),
+                    ),
+                ])
+            })
+            .collect(),
+    }
+}
+
+fn task_entries_value(tasks: &[AsyncTaskSpan], timeline_ms: u64) -> Value {
+    Value::Array {
+        element_type: "object".to_string(),
+        values: tasks
+            .iter()
+            .map(|task| {
+                let left = (task.start_ms as f64 / timeline_ms as f64) * 100.0;
+                let width = ((task.duration_ms as f64 / timeline_ms as f64) * 100.0).max(0.4);
+                let title = format!("{} - {} ms", task.label, task.duration_ms);
+                object_value([
+                    ("label", Value::String(truncate_gantt_label(&task.label, 80))),
+                    ("title", Value::String(title)),
+                    ("cssClass", Value::String(task.kind.css_class().to_string())),
+                    (
+                        "style",
+                        Value::String(format!("left:{left:.2}%;width:{width:.2}%")),
+                    ),
+                ])
+            })
+            .collect(),
+    }
+}
+
+fn tick_entries_value(timeline_ms: u64) -> Value {
+    Value::Array {
+        element_type: "object".to_string(),
+        values: gantt_ticks(timeline_ms)
+            .into_iter()
+            .map(|ms| {
+                let left = (ms as f64 / timeline_ms as f64) * 100.0;
+                object_value([
+                    ("label", Value::String(format!("{ms} ms"))),
+                    ("style", Value::String(format!("left:{left:.2}%"))),
+                ])
+            })
+            .collect(),
+    }
+}
+
+fn query_entries_value(queries: &[DbQueryEntry]) -> Value {
+    Value::Array {
+        element_type: "object".to_string(),
+        values: queries
+            .iter()
+            .map(|query| {
+                let status = if query.success { "ok" } else { "error" };
+                object_value([
+                    ("label", Value::String(query.label.clone())),
+                    ("source", Value::String(query.source.as_str().to_string())),
+                    ("sql", Value::String(query.sql.clone())),
+                    ("params", Value::String(format_params(&query.params))),
+                    ("duration", Value::Int(query.duration_ms as i64)),
+                    ("status", Value::String(status.to_string())),
+                    ("error", Value::String(query.error.clone().unwrap_or_default())),
+                ])
+            })
+            .collect(),
+    }
+}
+
+fn object_value<const N: usize>(fields: [(&str, Value); N]) -> Value {
+    Value::Object(
+        fields
+            .into_iter()
+            .map(|(name, value)| (name.to_string(), value))
+            .collect::<BTreeMap<_, _>>(),
+    )
+}
+
+fn format_params(params: &[String]) -> String {
+    if params.is_empty() {
+        return String::new();
+    }
+    params.join(", ")
+}
+
+fn timeline_ms(tasks: &[AsyncTaskSpan], total_ms: u64) -> u64 {
+    tasks
+        .iter()
+        .map(|task| task.start_ms.saturating_add(task.duration_ms))
+        .max()
+        .unwrap_or(0)
+        .max(total_ms)
+        .max(1)
 }
 
 fn render_gantt(tasks: &[AsyncTaskSpan], total_ms: u64) -> String {
@@ -478,7 +677,10 @@ fn truncate_gantt_label(value: &str, max_len: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{render_gantt, render_html, AsyncTaskSpan, RequestMetrics, TaskKind, TaskTrace};
+    use super::{
+        render_gantt, render_html, AsyncTaskSpan, DbQueryEntry, QuerySource, RequestMetrics,
+        TaskKind, TaskTrace,
+    };
     use std::path::PathBuf;
     use std::time::Duration;
 
@@ -496,6 +698,9 @@ mod tests {
         assert!(html.contains("Components: 3 ms"));
         assert!(html.contains("Render: 5 ms"));
         assert!(html.contains("Total: 12 ms"));
+        assert!(html.contains("Timings"));
+        assert!(html.contains("Async Timeline"));
+        assert!(html.contains("Queries"));
         assert!(html.contains("/posts"));
         assert!(html.contains("color-scheme: dark"));
         assert!(html.contains(".ws-debugbar td"));
@@ -548,6 +753,37 @@ mod tests {
     }
 
     #[test]
+    fn render_html_includes_query_rows() {
+        let mut metrics = RequestMetrics::new("/todos/live");
+        metrics.queries.push(DbQueryEntry {
+            label: "Todo.all".to_string(),
+            source: QuerySource::Model,
+            sql: "SELECT * FROM Todo ORDER BY createdAt".to_string(),
+            params: Vec::new(),
+            duration_ms: 4,
+            success: true,
+            error: None,
+        });
+        metrics.queries.push(DbQueryEntry {
+            label: "db.query".to_string(),
+            source: QuerySource::Raw,
+            sql: "SELECT nope FROM Missing".to_string(),
+            params: vec!["1".to_string()],
+            duration_ms: 2,
+            success: false,
+            error: Some("no such table: Missing".to_string()),
+        });
+        metrics.set_total(Duration::from_millis(6));
+
+        let html = render_html(&metrics);
+
+        assert!(html.contains("Queries: 2"));
+        assert!(html.contains("SELECT * FROM Todo ORDER BY createdAt"));
+        assert!(html.contains("SELECT nope FROM Missing"));
+        assert!(html.contains("no such table: Missing"));
+    }
+
+    #[test]
     fn task_trace_records_span_duration() {
         let mut trace = TaskTrace::new();
         let index = trace.begin("sleep(10ms)", TaskKind::Sleep);
@@ -558,5 +794,26 @@ mod tests {
         assert_eq!(spans.len(), 1);
         assert_eq!(spans[0].label, "sleep(10ms)");
         assert!(spans[0].duration_ms >= 1);
+    }
+
+    #[test]
+    fn task_trace_records_query_duration_and_error() {
+        let mut trace = TaskTrace::new();
+        let index = trace.begin_query(
+            "db.query",
+            QuerySource::Raw,
+            "SELECT 1",
+            vec!["1".to_string()],
+        );
+        std::thread::sleep(Duration::from_millis(5));
+        trace.finish_query(index, false, Some("boom".to_string()));
+
+        let queries = trace.queries();
+        assert_eq!(queries.len(), 1);
+        assert_eq!(queries[0].source, QuerySource::Raw);
+        assert_eq!(queries[0].sql, "SELECT 1");
+        assert!(!queries[0].success);
+        assert_eq!(queries[0].error.as_deref(), Some("boom"));
+        assert!(queries[0].duration_ms >= 1);
     }
 }

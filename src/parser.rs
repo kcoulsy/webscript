@@ -1,6 +1,7 @@
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
 use crate::stmt::{self, Statement};
+use crate::types;
 use std::collections::BTreeMap;
 
 fn parse_diagnostic(
@@ -651,9 +652,9 @@ fn parse_layout(lines: &[&str], cursor: &mut usize) -> Result<ComponentDecl, Dia
         .strip_prefix("@layout")
         .expect("@layout prefix already checked")
         .trim();
-    let name = header.strip_suffix('{').ok_or_else(|| {
-        parse_diagnostic_line(line_number, "@layout expects `@layout Name {`")
-    })?;
+    let name = header
+        .strip_suffix('{')
+        .ok_or_else(|| parse_diagnostic_line(line_number, "@layout expects `@layout Name {`"))?;
     let name = name.trim();
 
     if !is_component_name(name) {
@@ -695,9 +696,9 @@ fn parse_layout_use(lines: &[&str], cursor: &mut usize) -> Result<LayoutUse, Dia
         .strip_prefix("@layout")
         .expect("@layout prefix already checked")
         .trim();
-    let name = header.strip_suffix('{').ok_or_else(|| {
-        parse_diagnostic_line(line_number, "@layout expects `@layout Name {`")
-    })?;
+    let name = header
+        .strip_suffix('{')
+        .ok_or_else(|| parse_diagnostic_line(line_number, "@layout expects `@layout Name {`"))?;
     let name = name.trim();
 
     if !is_component_name(name) {
@@ -734,12 +735,9 @@ fn parse_layout_use(lines: &[&str], cursor: &mut usize) -> Result<LayoutUse, Dia
 }
 
 fn parse_layout_use_prop(line: &str, line_number: usize) -> Result<ComponentProp, Diagnostic> {
-    let (name, value_text) = line.split_once(':').ok_or_else(|| {
-        parse_diagnostic_line(
-            line_number,
-            "layout props use `name: value`",
-        )
-    })?;
+    let (name, value_text) = line
+        .split_once(':')
+        .ok_or_else(|| parse_diagnostic_line(line_number, "layout props use `name: value`"))?;
     let name = name.trim();
     if !is_identifier(name) {
         return Err(parse_diagnostic_line(
@@ -802,21 +800,26 @@ fn parse_client(lines: &[&str], cursor: &mut usize) -> Result<ClientBlock, Diagn
     Err(parse_diagnostic_line(line_number, "unclosed @client block"))
 }
 
-fn parse_client_handler(lines: &[&str], cursor: &mut usize) -> Result<ClientHandlerDecl, Diagnostic> {
+fn parse_client_handler(
+    lines: &[&str],
+    cursor: &mut usize,
+) -> Result<ClientHandlerDecl, Diagnostic> {
     let line_number = *cursor + 1;
     let trimmed = lines[*cursor].trim();
-    let rest = trimmed
-        .strip_prefix("fn ")
-        .ok_or_else(|| parse_diagnostic_line(line_number, "client handler expects `fn name() {`"))?;
-    let (name_part, _) = rest
-        .split_once('{')
-        .ok_or_else(|| parse_diagnostic_line(line_number, "client handler expects `fn name() {`"))?;
+    let rest = trimmed.strip_prefix("fn ").ok_or_else(|| {
+        parse_diagnostic_line(line_number, "client handler expects `fn name() {`")
+    })?;
+    let (name_part, _) = rest.split_once('{').ok_or_else(|| {
+        parse_diagnostic_line(line_number, "client handler expects `fn name() {`")
+    })?;
     let name_part = name_part.trim();
     let (name, param_name) = if let Some((name, params)) = name_part.split_once('(') {
         let name = name.trim();
         let params = params
             .strip_suffix(')')
-            .ok_or_else(|| parse_diagnostic_line(line_number, "client handler expects `fn name() {`"))?
+            .ok_or_else(|| {
+                parse_diagnostic_line(line_number, "client handler expects `fn name() {`")
+            })?
             .trim();
         if params.is_empty() {
             (name, None)
@@ -862,18 +865,24 @@ fn parse_client_handler(lines: &[&str], cursor: &mut usize) -> Result<ClientHand
         *cursor += 1;
     }
 
-    Err(parse_diagnostic_line(line_number, "unclosed client handler block"))
+    Err(parse_diagnostic_line(
+        line_number,
+        "unclosed client handler block",
+    ))
 }
 
 fn parse_client_signal(line: &str, line_number: usize) -> Result<ClientSignalDecl, Diagnostic> {
-    let (left, initial_source) = line
-        .split_once('=')
-        .ok_or_else(|| parse_diagnostic_line(line_number, "client signals require an initial value"))?;
+    let (left, initial_source) = line.split_once('=').ok_or_else(|| {
+        parse_diagnostic_line(line_number, "client signals require an initial value")
+    })?;
     let left = left.trim();
     let initial_source = initial_source.trim();
 
     let (name, type_part) = left.split_once(':').ok_or_else(|| {
-        parse_diagnostic_line(line_number, "client signals use `name: signal<type> = value`")
+        parse_diagnostic_line(
+            line_number,
+            "client signals use `name: signal<type> = value`",
+        )
     })?;
     let name = name.trim();
     let type_part = type_part.trim();
@@ -918,7 +927,9 @@ fn parse_client_signal(line: &str, line_number: usize) -> Result<ClientSignalDec
             1,
             initial_source.len(),
         )?)
-    } else if initial_source.chars().all(|char| char.is_ascii_digit() || char == '-')
+    } else if initial_source
+        .chars()
+        .all(|char| char.is_ascii_digit() || char == '-')
         && inner_type == "int"
     {
         ClientInitial::Literal(parse_value(
@@ -1078,7 +1089,10 @@ fn parse_action(lines: &[&str], cursor: &mut usize) -> Result<ActionDecl, Diagno
     })
 }
 
-fn parse_action_header(header: &str, line_number: usize) -> Result<(String, Option<String>), Diagnostic> {
+fn parse_action_header(
+    header: &str,
+    line_number: usize,
+) -> Result<(String, Option<String>), Diagnostic> {
     let Some((name, rest)) = header.split_once('(') else {
         let name = header.trim();
         if !is_identifier(name) {
@@ -1107,14 +1121,12 @@ fn parse_action_header(header: &str, line_number: usize) -> Result<(String, Opti
             )
         })?
         .trim();
-    let (param_name, schema_name) = rest
-        .split_once(':')
-        .ok_or_else(|| {
-            parse_diagnostic_line(
-                line_number,
-                "@action expects `@action name(input: SchemaName) {`",
-            )
-        })?;
+    let (param_name, schema_name) = rest.split_once(':').ok_or_else(|| {
+        parse_diagnostic_line(
+            line_number,
+            "@action expects `@action name(input: SchemaName) {`",
+        )
+    })?;
     if param_name.trim() != "input" {
         return Err(parse_diagnostic_line(
             line_number,
@@ -1152,7 +1164,7 @@ fn parse_do(lines: &[&str], cursor: &mut usize) -> Result<TemplateNode, Diagnost
 }
 
 fn parse_prop_decl(line: &str, line_number: usize) -> Result<PropDecl, Diagnostic> {
-    let (left, default_value) = match line.split_once('=') {
+    let (left, default_value) = match split_once_unquoted(line, '=') {
         Some((left, right)) => (left.trim(), Some(right.trim())),
         None => (line, None),
     };
@@ -1674,7 +1686,10 @@ fn parse_if_branch(
     let then_nodes = parse_nodes(lines, cursor, true, lets)?;
 
     if *cursor >= lines.len() {
-        return Err(parse_diagnostic_line(line_number, "unclosed @else if block"));
+        return Err(parse_diagnostic_line(
+            line_number,
+            "unclosed @else if block",
+        ));
     }
 
     let close_line = lines[*cursor].trim();
@@ -1767,12 +1782,18 @@ fn parse_switch(
         }
         if branch_line == "@default {" {
             if !default_nodes.is_empty() {
-                return Err(parse_diagnostic_line(*cursor + 1, "duplicate @default block"));
+                return Err(parse_diagnostic_line(
+                    *cursor + 1,
+                    "duplicate @default block",
+                ));
             }
             *cursor += 1;
             default_nodes = parse_nodes(lines, cursor, true, lets)?;
             if *cursor >= lines.len() || lines[*cursor].trim() != "}" {
-                return Err(parse_diagnostic_line(*cursor + 1, "unclosed @default block"));
+                return Err(parse_diagnostic_line(
+                    *cursor + 1,
+                    "unclosed @default block",
+                ));
             }
             *cursor += 1;
             continue;
@@ -2145,6 +2166,26 @@ fn parse_value(
         return parse_array_value(element_type, value, line_number, start_col, end_col);
     }
 
+    if types::is_string_literal_type(type_name) {
+        let parsed = parse_quoted(value).map(Value::String).ok_or_else(|| {
+            parse_diagnostic(
+                line_number,
+                start_col,
+                end_col,
+                "string literal type values must be quoted",
+            )
+        })?;
+        if types::value_matches_type(&parsed, type_name) {
+            return Ok(parsed);
+        }
+        return Err(parse_diagnostic(
+            line_number,
+            start_col,
+            end_col,
+            format!("expected `{type_name}`, found `{}`", parsed.type_name()),
+        ));
+    }
+
     match type_name {
         "string" => parse_quoted(value).map(Value::String).ok_or_else(|| {
             parse_diagnostic(
@@ -2188,6 +2229,26 @@ fn parse_value(
             format!("unsupported MVP type `{other}`"),
         )),
     }
+}
+
+fn split_once_unquoted(value: &str, needle: char) -> Option<(&str, &str)> {
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, char) in value.char_indices() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match char {
+            '\\' if in_string => escaped = true,
+            '"' => in_string = !in_string,
+            _ if char == needle && !in_string => {
+                return Some((&value[..index], &value[index + char.len_utf8()..]));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 fn parse_array_value(
@@ -2477,7 +2538,10 @@ mod tests {
     #[test]
     fn rejects_missing_page() {
         let error = parse("<h1>No route</h1>").expect_err("missing page should fail");
-        assert_eq!(error.message, "missing @page, @component, or @layout directive");
+        assert_eq!(
+            error.message,
+            "missing @page, @component, or @layout directive"
+        );
         assert_eq!(error.span.line, 1);
     }
 
@@ -2499,6 +2563,34 @@ mod tests {
         .expect("valid page");
 
         assert!(matches!(page.template[0], TemplateNode::Component(_)));
+    }
+
+    #[test]
+    fn parses_string_literal_union_prop_defaults() {
+        let component = parse(
+            "@component Button {\n  variant: \"primary\" | \"secondary\" = \"primary\"\n  kind: \"icon\" = \"icon\"\n}\n\n<button>{variant}</button>",
+        )
+        .expect("valid component");
+
+        let declaration = component.component.as_ref().expect("component");
+        assert_eq!(declaration.props[0].type_name, r#""primary" | "secondary""#);
+        assert!(matches!(
+            declaration.props[0].default,
+            Some(Value::String(ref value)) if value == "primary"
+        ));
+        assert_eq!(declaration.props[1].type_name, r#""icon""#);
+    }
+
+    #[test]
+    fn rejects_string_literal_union_prop_default_mismatch() {
+        let error = parse(
+            "@component Button {\n  variant: \"primary\" | \"secondary\" = \"ghost\"\n}\n\n<button>{variant}</button>",
+        )
+        .expect_err("invalid literal default should fail");
+
+        assert!(error
+            .message
+            .contains("expected `\"primary\" | \"secondary\"`"));
     }
 
     #[test]
@@ -2601,10 +2693,9 @@ mod tests {
 
     #[test]
     fn parses_global_style_after_markup() {
-        let parsed = parse(
-            "@page \"/\"\n\n<main></main>\n\n@style global {\n  body { margin: 0; }\n}",
-        )
-        .expect("valid page");
+        let parsed =
+            parse("@page \"/\"\n\n<main></main>\n\n@style global {\n  body { margin: 0; }\n}")
+                .expect("valid page");
 
         assert_eq!(parsed.styles.len(), 1);
         assert!(parsed.styles[0].global);
@@ -2682,9 +2773,7 @@ mod tests {
         assert_eq!(call.event_bindings[0].handler_source, "count++");
         assert!(call.class_expr.is_some());
         assert!(
-            call.props
-                .iter()
-                .all(|prop| prop.name != "class"),
+            call.props.iter().all(|prop| prop.name != "class"),
             "class should be extracted as passthrough, not a prop"
         );
     }

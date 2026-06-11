@@ -61,6 +61,7 @@ The current MVP supports self-closing component calls with string, int, bool, an
 ```web
 @component PostPreview {
   title: string
+  variant: "default" | "outline" = "default"
   rank: int = 0
   featured: bool = false
 }
@@ -82,7 +83,7 @@ Use it from a page:
 @let posts: string[] = ["One", "Two", "Three"]
 
 <main>
-  <PostPreview title="Pinned release notes" rank=1 featured=true />
+  <PostPreview title="Pinned release notes" variant="outline" rank=1 featured=true />
 
   @for post in posts {
     <PostPreview title={post} />

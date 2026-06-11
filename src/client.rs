@@ -261,7 +261,10 @@ pub fn render_island_script(manifest: &IslandManifest) -> String {
             js_string_literal(&manifest.action_url)
         ));
     }
-    lines.push(format!("  const signals = {{ {} }};", signal_inits.join(", ")));
+    lines.push(format!(
+        "  const signals = {{ {} }};",
+        signal_inits.join(", ")
+    ));
 
     if !manifest.named_handlers.is_empty() {
         let mut handler_entries = Vec::new();
@@ -454,10 +457,7 @@ fn resolve_handler_lambda(
     }
 
     if is_identifier(source) && ctx.handlers.contains(source) {
-        return Ok((
-            DEFAULT_EVENT_PARAM.to_string(),
-            format!("{source}()"),
-        ));
+        return Ok((DEFAULT_EVENT_PARAM.to_string(), format!("{source}()")));
     }
 
     Ok((DEFAULT_EVENT_PARAM.to_string(), source.to_string()))
@@ -476,10 +476,7 @@ pub fn value_signal_from_field_handler(handler_source: &str) -> Option<String> {
     if !is_identifier(left) {
         return None;
     }
-    if right == "event.value"
-        || right == "event.target.value"
-        || right.ends_with(".target.value")
-    {
+    if right == "event.value" || right == "event.target.value" || right.ends_with(".target.value") {
         return Some(left.to_string());
     }
     None
@@ -529,13 +526,17 @@ fn try_legacy_handler(
     if let Some(name) = source.strip_suffix("++") {
         let name = name.trim();
         if is_identifier(name) && ctx.signals.contains(name) {
-            return Ok(Some(format!("signals.{name}.set(signals.{name}.get() + 1)")));
+            return Ok(Some(format!(
+                "signals.{name}.set(signals.{name}.get() + 1)"
+            )));
         }
     }
     if let Some(name) = source.strip_suffix("--") {
         let name = name.trim();
         if is_identifier(name) && ctx.signals.contains(name) {
-            return Ok(Some(format!("signals.{name}.set(signals.{name}.get() - 1)")));
+            return Ok(Some(format!(
+                "signals.{name}.set(signals.{name}.get() - 1)"
+            )));
         }
     }
 
@@ -551,10 +552,14 @@ fn try_legacy_handler(
             return Ok(Some(format!("signals.{left}.set(!signals.{left}.get())")));
         }
         if right == format!("{left} + 1") {
-            return Ok(Some(format!("signals.{left}.set(signals.{left}.get() + 1)")));
+            return Ok(Some(format!(
+                "signals.{left}.set(signals.{left}.get() + 1)"
+            )));
         }
         if right == format!("{left} - 1") {
-            return Ok(Some(format!("signals.{left}.set(signals.{left}.get() - 1)")));
+            return Ok(Some(format!(
+                "signals.{left}.set(signals.{left}.get() - 1)"
+            )));
         }
         if right == "event.value"
             || right == "event.target.value"
@@ -989,14 +994,23 @@ impl ExprParser<'_, '_> {
         match token.lexeme.as_str() {
             "true" | "false" => Ok(token.lexeme),
             value if value.starts_with('"') || value.starts_with('\'') => Ok(token.lexeme),
-            value if value.chars().all(|char| char.is_ascii_digit() || char == '.') => {
+            value
+                if value
+                    .chars()
+                    .all(|char| char.is_ascii_digit() || char == '.') =>
+            {
                 Ok(token.lexeme)
             }
             "event" => Ok(param.to_string()),
             name if self.ctx.signals.contains(name) => Ok(format!("signals.{name}.get()")),
             name if self.ctx.handlers.contains(name) => Ok(format!("handlers.{name}")),
             name if is_identifier(name) => Ok(name.to_string()),
-            _ => Err(invalid_handler("expression", &token.lexeme, self.line, self.column)),
+            _ => Err(invalid_handler(
+                "expression",
+                &token.lexeme,
+                self.line,
+                self.column,
+            )),
         }
     }
 
@@ -1036,7 +1050,12 @@ impl ExprParser<'_, '_> {
         if self.match_lexeme(lexeme) {
             Ok(())
         } else {
-            Err(invalid_handler("expression", lexeme, self.line, self.column))
+            Err(invalid_handler(
+                "expression",
+                lexeme,
+                self.line,
+                self.column,
+            ))
         }
     }
 
@@ -1047,7 +1066,12 @@ impl ExprParser<'_, '_> {
         if is_identifier(&token.lexeme) {
             Ok(token.lexeme)
         } else {
-            Err(invalid_handler("expression", &token.lexeme, self.line, self.column))
+            Err(invalid_handler(
+                "expression",
+                &token.lexeme,
+                self.line,
+                self.column,
+            ))
         }
     }
 }
@@ -1258,9 +1282,7 @@ fn invalid_handler(event: &str, source: &str, line: usize, column: usize) -> Dia
 fn invalid_lambda(event: &str, source: &str, line: usize, column: usize) -> Diagnostic {
     Diagnostic::error(
         Span::new(line, column, column + source.len().max(1)),
-        format!(
-            "invalid {event} lambda `{source}`; use `|param| body` or a simple expression"
-        ),
+        format!("invalid {event} lambda `{source}`; use `|param| body` or a simple expression"),
         None,
     )
 }
@@ -1350,7 +1372,8 @@ mod tests {
         let handlers = BTreeSet::from(["save".to_string()]);
         let page_actions = BTreeMap::new();
         let compile_ctx = ctx(&signals, &handlers, &page_actions);
-        let compiled = compile_event_handler("submit", "save", 1, 1, &compile_ctx).expect("handler");
+        let compiled =
+            compile_event_handler("submit", "save", 1, 1, &compile_ctx).expect("handler");
         assert_eq!(compiled.js_body, "handlers.save(event)");
     }
 
@@ -1383,17 +1406,9 @@ mod tests {
         let handlers = BTreeSet::new();
         let page_actions = BTreeMap::new();
         let compile_ctx = ctx(&signals, &handlers, &page_actions);
-        let js = compile_handler_body(
-            "count = 0\nmessage = \"reset\"",
-            &compile_ctx,
-            1,
-            1,
-        )
-        .expect("handler body");
-        assert_eq!(
-            js,
-            "signals.count.set(0); signals.message.set(\"reset\")"
-        );
+        let js = compile_handler_body("count = 0\nmessage = \"reset\"", &compile_ctx, 1, 1)
+            .expect("handler body");
+        assert_eq!(js, "signals.count.set(0); signals.message.set(\"reset\")");
     }
 
     #[test]
@@ -1404,7 +1419,10 @@ mod tests {
         let compile_ctx = ctx(&signals, &handlers, &page_actions);
         let compiled = compile("|e| count++", &compile_ctx);
         assert_eq!(compiled.param_name, "e");
-        assert_eq!(compiled.js_body, "signals.count.set(signals.count.get() + 1)");
+        assert_eq!(
+            compiled.js_body,
+            "signals.count.set(signals.count.get() + 1)"
+        );
     }
 
     #[test]
@@ -1517,10 +1535,8 @@ mod tests {
     fn compiles_action_call_with_object_literal() {
         let signals = BTreeSet::from(["title".to_string()]);
         let handlers = BTreeSet::new();
-        let page_actions = BTreeMap::from([(
-            "addTodo".to_string(),
-            Some("AddTodoInput".to_string()),
-        )]);
+        let page_actions =
+            BTreeMap::from([("addTodo".to_string(), Some("AddTodoInput".to_string()))]);
         let compile_ctx = HandlerCompileContext {
             signals: &signals,
             handlers: &handlers,

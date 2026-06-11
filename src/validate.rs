@@ -23,9 +23,24 @@ fn validate_statements(
 ) {
     for statement in statements {
         match statement {
-            Statement::Let { value, line, column, .. }
-            | Statement::Assign { value, line, column, .. }
-            | Statement::Throw { value, line, column, .. } => {
+            Statement::Let {
+                value,
+                line,
+                column,
+                ..
+            }
+            | Statement::Assign {
+                value,
+                line,
+                column,
+                ..
+            }
+            | Statement::Throw {
+                value,
+                line,
+                column,
+                ..
+            } => {
                 validate_expr(value, *line, *column, schema_names, diagnostics);
             }
             Statement::If {
@@ -54,7 +69,12 @@ fn validate_statements(
             Statement::FnDef { body, .. } => {
                 validate_statements(body, schema_names, diagnostics);
             }
-            Statement::Return { value: Some(value), line, column, .. } => {
+            Statement::Return {
+                value: Some(value),
+                line,
+                column,
+                ..
+            } => {
                 validate_expr(value, *line, *column, schema_names, diagnostics);
             }
             Statement::ExprStmt { expr, line, column } => {

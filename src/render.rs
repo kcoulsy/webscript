@@ -9,10 +9,11 @@ use crate::parser::{
     ClientBlock, ComponentCall, ComponentProp, EventBinding, LayoutUse, LetDecl, LetValue,
     PropValue, SourceExpr, StyleBlock, TemplateNode, Value, WebFile,
 };
-use crate::style;
 use crate::runtime::WebRuntime;
 use crate::schema_runtime::SchemaRuntime;
 use crate::stmt::{self, BlockOutcome, Statement};
+use crate::style;
+use crate::types;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub type Scope = BTreeMap<String, Value>;
@@ -100,7 +101,15 @@ pub async fn render_with_components_async(
     components: &ComponentRegistry,
     runtime: &WebRuntime,
 ) -> Result<RenderOutput, Diagnostic> {
-    render_page_async(file, params, components, &LayoutRegistry::new(), None, runtime).await
+    render_page_async(
+        file,
+        params,
+        components,
+        &LayoutRegistry::new(),
+        None,
+        runtime,
+    )
+    .await
 }
 
 pub async fn render_page_async(
@@ -149,11 +158,7 @@ pub async fn render_page_async(
         )
     })?;
 
-    let layout_scope = layout_scope_for(
-        layout_file,
-        file.layout_use.as_ref(),
-        &scope,
-    )?;
+    let layout_scope = layout_scope_for(layout_file, file.layout_use.as_ref(), &scope)?;
     let mut layout_island = None;
     let mut forward_state = None;
     let shadowed = BTreeSet::new();
@@ -455,11 +460,7 @@ pub fn prepare_action_input(
 
     let raw = Value::Object(input);
     let validated = schemas.validate(schema_name, raw).map_err(|message| {
-        Diagnostic::error(
-            Span::identifier(1, 1, &action.name),
-            message,
-            None,
-        )
+        Diagnostic::error(Span::identifier(1, 1, &action.name), message, None)
     })?;
 
     let Value::Object(fields) = validated else {
@@ -593,7 +594,7 @@ fn evaluate_lets(lets: &[LetDecl], scope: &mut Scope) -> Result<(), Diagnostic> 
         };
 
         if let Some(type_name) = &let_decl.type_name {
-            if !type_names_match(&value.type_name(), type_name) {
+            if !types::value_matches_type(&value, type_name) {
                 return Err(Diagnostic::error(
                     Span::new(
                         let_decl.line,
@@ -965,7 +966,11 @@ fn apply_forward_bindings(
         let trimmed = tag.trim_end();
         tag = trimmed
             .strip_suffix("/>")
-            .or_else(|| trimmed.strip_suffix('>').and_then(|value| value.strip_suffix('/')))
+            .or_else(|| {
+                trimmed
+                    .strip_suffix('>')
+                    .and_then(|value| value.strip_suffix('/'))
+            })
             .unwrap_or(trimmed)
             .trim_end()
             .to_string();
@@ -1000,12 +1005,7 @@ fn apply_forward_bindings(
         tag.push('>');
     }
     forward.applied = true;
-    Ok(format!(
-        "{}{}{}",
-        &html[..tag_start],
-        tag,
-        &html[tag_end..]
-    ))
+    Ok(format!("{}{}{}", &html[..tag_start], tag, &html[tag_end..]))
 }
 
 fn merge_class_on_tag(tag: &str, extra: &str) -> String {
@@ -1110,11 +1110,7 @@ fn forward_bind_target_missing(call: &ComponentCall) -> Diagnostic {
 }
 
 fn forward_bind_target_missing_at(line: usize) -> Diagnostic {
-    Diagnostic::error(
-        Span::at(line, 1),
-        "malformed `data-ws-bind` target",
-        None,
-    )
+    Diagnostic::error(Span::at(line, 1), "malformed `data-ws-bind` target", None)
 }
 
 fn component_template_has_bind_target(component: &WebFile) -> bool {
@@ -1194,9 +1190,8 @@ fn render_component(
                 None
             }
         });
-    let has_forward = !call.event_bindings.is_empty()
-        || call.class_expr.is_some()
-        || value_signal.is_some();
+    let has_forward =
+        !call.event_bindings.is_empty() || call.class_expr.is_some() || value_signal.is_some();
     let mut forward_state = has_forward.then(|| ForwardContext {
         event_bindings: call.event_bindings.clone(),
         class_expr: call.class_expr.clone(),
@@ -1600,13 +1595,13 @@ fn validate_component_call(
             continue;
         };
 
-        match prop_value_type(&prop.value, scope, prop) {
-            Ok(actual) if type_names_match(&actual, &declared.type_name) => {}
-            Ok(actual) => diagnostics.push(prop_type_mismatch(
+        match evaluate_prop_value(&prop.value, scope, prop) {
+            Ok(value) if types::value_matches_type(&value, &declared.type_name) => {}
+            Ok(value) => diagnostics.push(prop_type_mismatch(
                 prop,
                 &call.name,
                 &declared.type_name,
-                &actual,
+                &value.type_name(),
             )),
             Err(error) => diagnostics.push(error),
         }
@@ -1651,25 +1646,6 @@ fn validate_component_call(
     let has_forward = !call.event_bindings.is_empty() || call.class_expr.is_some();
     if has_forward && !component_template_has_bind_target(component) {
         diagnostics.push(forward_bind_target_missing(call));
-    }
-}
-
-fn prop_value_type(
-    value: &PropValue,
-    scope: &Scope,
-    prop: &ComponentProp,
-) -> Result<String, Diagnostic> {
-    match value {
-        PropValue::Literal(value) => Ok(value.type_name()),
-        PropValue::Expr(expr) => evaluate_source_expr(expr, scope)
-            .map(|value| value.type_name())
-            .map_err(|error| {
-                Diagnostic::error(
-                    Span::new(prop.line, prop.value_start_col, prop.value_end_col),
-                    error.message,
-                    error.label,
-                )
-            }),
     }
 }
 
@@ -1756,40 +1732,14 @@ fn prop_type_mismatch(
 }
 
 fn value_matches_type(value: &Value, expected: &str) -> bool {
-    type_names_match(&value.type_name(), expected)
-}
-
-fn type_names_match(actual: &str, expected: &str) -> bool {
-    if actual == expected {
-        return true;
-    }
-
-    if is_object_type_name(expected) {
-        return actual == "object" || actual.starts_with('{');
-    }
-
-    if let (Some(actual_element), Some(expected_element)) =
-        (actual.strip_suffix("[]"), expected.strip_suffix("[]"))
-    {
-        return type_names_match(actual_element, expected_element);
-    }
-
-    actual.starts_with('{') && expected.starts_with('{') && actual == expected
-}
-
-fn is_object_type_name(type_name: &str) -> bool {
-    type_name == "object"
-        || type_name
-            .chars()
-            .next()
-            .is_some_and(|char| char.is_ascii_uppercase())
+    types::value_matches_type(value, expected)
 }
 
 fn sample_for_prop_type(type_name: &str) -> Value {
     if type_name.ends_with("[]") {
         return sample_for_type(type_name);
     }
-    if is_object_type_name(type_name) {
+    if types::is_object_type_name(type_name) {
         return Value::Object(BTreeMap::new());
     }
     sample_for_type(type_name)
@@ -1917,7 +1867,10 @@ mod tests {
             ("UI.Input", include_str!("../app/components/UI/Input.web")),
             ("UI.Label", include_str!("../app/components/UI/Label.web")),
             ("UI.Card", include_str!("../app/components/UI/Card.web")),
-            ("UI.Separator", include_str!("../app/components/UI/Separator.web")),
+            (
+                "UI.Separator",
+                include_str!("../app/components/UI/Separator.web"),
+            ),
         ];
         for (name, source) in primitives {
             let file = parse(source).expect("ui primitive");
@@ -2210,13 +2163,8 @@ mod tests {
         let mut components = ComponentRegistry::new();
         components.insert("UI.Button".to_string(), button);
 
-        let output = render_with_components(
-            &page,
-            &Scope::new(),
-            &components,
-            &WebRuntime::new(),
-        )
-        .expect("rendered");
+        let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
+            .expect("rendered");
 
         assert!(output.html.contains("<button>Save</button>"));
     }
@@ -2224,17 +2172,12 @@ mod tests {
     #[test]
     fn renders_client_counter_island() {
         let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
-        let page = parse("@page \"/counter\"\n\n<Counter initial={5} label=\"Score\" />")
-            .expect("page");
+        let page =
+            parse("@page \"/counter\"\n\n<Counter initial={5} label=\"Score\" />").expect("page");
         let components = with_ui_primitives(counter);
 
-        let output = render_with_components(
-            &page,
-            &Scope::new(),
-            &components,
-            &WebRuntime::new(),
-        )
-        .expect("rendered");
+        let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
+            .expect("rendered");
 
         assert!(output.html.contains("data-ws-island=\"Counter-0\""));
         assert!(output.html.contains("data-ws-click=\"0\""));
@@ -2246,7 +2189,10 @@ mod tests {
         );
         assert!(output.html.contains("data-ws-text=\"count\">5</span>"));
         assert_eq!(output.islands.len(), 1);
-        assert_eq!(output.islands[0].signals[0].initial, crate::parser::Value::Int(5));
+        assert_eq!(
+            output.islands[0].signals[0].initial,
+            crate::parser::Value::Int(5)
+        );
         assert_eq!(output.islands[0].event_handlers.len(), 3);
 
         let script = crate::client::render_island_script(&output.islands[0]);
@@ -2260,13 +2206,8 @@ mod tests {
         let page = parse("@page \"/\"\n\n<Details title=\"Notes\" />").expect("page");
         let components = with_ui_primitives(details);
 
-        let output = render_with_components(
-            &page,
-            &Scope::new(),
-            &components,
-            &WebRuntime::new(),
-        )
-        .expect("rendered");
+        let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
+            .expect("rendered");
 
         assert!(output.html.contains("data-ws-if=\"open\""));
         assert_eq!(output.islands[0].if_bindings.len(), 1);
@@ -2281,17 +2222,16 @@ mod tests {
         let page = parse("@page \"/\"\n\n<Greeting />").expect("page");
         let components = with_ui_primitives(greeting);
 
-        let output = render_with_components(
-            &page,
-            &Scope::new(),
-            &components,
-            &WebRuntime::new(),
-        )
-        .expect("rendered");
+        let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
+            .expect("rendered");
 
         assert!(
-            output.html.contains("data-ws-input=\"0\" data-ws-value=\"name\"")
-                || output.html.contains("data-ws-value=\"name\" data-ws-input=\"0\"")
+            output
+                .html
+                .contains("data-ws-input=\"0\" data-ws-value=\"name\"")
+                || output
+                    .html
+                    .contains("data-ws-value=\"name\" data-ws-input=\"0\"")
         );
         assert!(
             !output.html.contains(r#"name="<span data-ws-text"#),
@@ -2316,18 +2256,17 @@ mod tests {
         let page = parse("@page \"/\"\n\n<EventDemo />").expect("page");
         let components = with_ui_primitives(demo);
 
-        let output = render_with_components(
-            &page,
-            &Scope::new(),
-            &components,
-            &WebRuntime::new(),
-        )
-        .expect("rendered");
+        let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
+            .expect("rendered");
 
         assert!(output.html.contains("data-ws-submit=\"0\""));
         assert!(
-            output.html.contains("data-ws-change=\"0\" data-ws-value=\"note\"")
-                || output.html.contains("data-ws-value=\"note\" data-ws-change=\"0\"")
+            output
+                .html
+                .contains("data-ws-change=\"0\" data-ws-value=\"note\"")
+                || output
+                    .html
+                    .contains("data-ws-value=\"note\" data-ws-change=\"0\"")
         );
         let script = crate::client::render_island_script(&output.islands[0]);
         assert!(script.contains("event.preventDefault();handlers.save(event)"));
@@ -2391,17 +2330,12 @@ mod tests {
     #[test]
     fn renders_scoped_component_styles() {
         let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
-        let page = parse("@page \"/counter\"\n\n<Counter initial={5} label=\"Score\" />")
-            .expect("page");
+        let page =
+            parse("@page \"/counter\"\n\n<Counter initial={5} label=\"Score\" />").expect("page");
         let components = with_ui_primitives(counter);
 
-        let output = render_with_components(
-            &page,
-            &Scope::new(),
-            &components,
-            &WebRuntime::new(),
-        )
-        .expect("rendered");
+        let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
+            .expect("rendered");
 
         assert!(output.html.contains(r#"data-ws-style="Counter""#));
         assert!(output.scoped_styles.contains_key("Counter"));
@@ -2435,19 +2369,12 @@ mod tests {
     #[test]
     fn dedupes_scoped_styles_for_multiple_component_instances() {
         let counter = parse(include_str!("../app/components/Counter.web")).expect("counter");
-        let page = parse(
-            "@page \"/counter\"\n\n<Counter initial={1} />\n<Counter initial={2} />",
-        )
-        .expect("page");
+        let page = parse("@page \"/counter\"\n\n<Counter initial={1} />\n<Counter initial={2} />")
+            .expect("page");
         let components = with_ui_primitives(counter);
 
-        let output = render_with_components(
-            &page,
-            &Scope::new(),
-            &components,
-            &WebRuntime::new(),
-        )
-        .expect("rendered");
+        let output = render_with_components(&page, &Scope::new(), &components, &WebRuntime::new())
+            .expect("rendered");
 
         assert!(output.scoped_styles.contains_key("Counter"));
         assert!(output.scoped_styles.contains_key("UI.Button"));

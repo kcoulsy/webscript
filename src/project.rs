@@ -1,10 +1,10 @@
 use crate::db;
 use crate::diagnostic::{Diagnostic, FileDiagnostic, Span};
-use crate::schema;
-use crate::validate;
 use crate::parser;
 use crate::parser::Value;
 use crate::render::{self, Scope};
+use crate::schema;
+use crate::validate;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::BTreeMap;
 use std::fs;

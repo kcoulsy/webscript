@@ -206,14 +206,8 @@ fn handle_connection(
                 if !matches!(outcome, render::ActionOutcome::Fail(_)) {
                     save_session(sessions, &session_id, session).map_err(io_diagnostic)?;
                 }
-                write_action_json(
-                    &mut stream,
-                    path,
-                    &outcome,
-                    &session_id,
-                    is_new_session,
-                )
-                .map_err(io_diagnostic)?;
+                write_action_json(&mut stream, path, &outcome, &session_id, is_new_session)
+                    .map_err(io_diagnostic)?;
                 return Ok(());
             }
             Ok(render::ActionOutcome::Redirect(target)) => {
@@ -278,6 +272,7 @@ fn handle_connection(
             metrics.push("Render", render_started.elapsed(), None);
             if let Ok(trace) = task_trace.lock() {
                 metrics.tasks = trace.spans().to_vec();
+                metrics.queries = trace.queries().to_vec();
             }
             metrics.set_total(started.elapsed());
             let style_fragment =
@@ -303,6 +298,7 @@ fn handle_connection(
             metrics.push("Render", render_started.elapsed(), None);
             if let Ok(trace) = task_trace.lock() {
                 metrics.tasks = trace.spans().to_vec();
+                metrics.queries = trace.queries().to_vec();
             }
             metrics.set_total(started.elapsed());
             respond_diagnostic(
@@ -417,9 +413,7 @@ fn query_value(query: &str, name: &str) -> Option<String> {
 }
 
 fn parse_post_input(content_type: Option<&str>, body: &str) -> Result<render::Scope, String> {
-    if content_type
-        .is_some_and(|value| value.starts_with("application/json"))
-    {
+    if content_type.is_some_and(|value| value.starts_with("application/json")) {
         return json_scope(body);
     }
     Ok(form_scope(body))
@@ -458,17 +452,13 @@ fn write_action_json(
             })
             .to_string(),
         ),
-        render::ActionOutcome::Fail(message) => (
-            422,
-            serde_json::json!({ "error": message }).to_string(),
-        ),
+        render::ActionOutcome::Fail(message) => {
+            (422, serde_json::json!({ "error": message }).to_string())
+        }
         render::ActionOutcome::Json(value) => {
             let data = crate::schema::parser_value_to_json(value)
                 .map_err(|error| format!("failed to serialize action result: {error}"))?;
-            (
-                200,
-                serde_json::json!({ "data": data }).to_string(),
-            )
+            (200, serde_json::json!({ "data": data }).to_string())
         }
     };
 

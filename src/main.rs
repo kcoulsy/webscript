@@ -1,20 +1,21 @@
 mod client;
 mod db;
 mod db_runtime;
-mod model_runtime;
-mod schema;
-mod schema_runtime;
 mod debugbar;
 mod dev;
 mod diagnostic;
 mod expr;
+mod model_runtime;
 mod parser;
 mod project;
 mod render;
 mod runtime;
+mod schema;
+mod schema_runtime;
 mod server;
-mod style;
 mod stmt;
+mod style;
+mod types;
 mod validate;
 
 use std::env;

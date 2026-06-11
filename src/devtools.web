@@ -1,0 +1,165 @@
+@component WebScriptDevtools {
+  requestPath: string = ""
+  routeFile: string = ""
+  entries: object[] = []
+  tasks: object[] = []
+  ticks: object[] = []
+  queries: object[] = []
+  total: int = 0
+}
+
+@client {
+  showTimings: signal<bool> = true
+  showTimeline: signal<bool> = false
+  showQueries: signal<bool> = false
+
+  fn selectTimings() {
+    showTimings = true
+    showTimeline = false
+    showQueries = false
+  }
+
+  fn selectTimeline() {
+    showTimings = false
+    showTimeline = true
+    showQueries = false
+  }
+
+  fn selectQueries() {
+    showTimings = false
+    showTimeline = false
+    showQueries = true
+  }
+}
+
+@if showTimings {
+  <div class="ws-debugbar-tabs" role="tablist" aria-label="WebScript devtools">
+    <button type="button" role="tab" aria-selected="true" @click={selectTimings}>Timings</button>
+    <button type="button" role="tab" aria-selected="false" @click={selectTimeline}>Async Timeline</button>
+    <button type="button" role="tab" aria-selected="false" @click={selectQueries}>Queries</button>
+  </div>
+  <section class="ws-debugbar-tabpanel" role="tabpanel">
+    <table>
+      <thead>
+        <tr><th>Phase</th><th>Time</th><th>Detail</th></tr>
+      </thead>
+      <tbody>
+        <tr><td>Request</td><td colspan="2">{requestPath}</td></tr>
+        @if routeFile != "" {
+          <tr><td>Route file</td><td colspan="2">{routeFile}</td></tr>
+        }
+        @for entry in entries {
+          <tr>
+            <td>{entry.label}</td>
+            <td>{entry.duration} ms</td>
+            <td class="ws-debugbar-detail">{entry.detail}</td>
+          </tr>
+        }
+        <tr><td>Total</td><td colspan="2">{total} ms</td></tr>
+      </tbody>
+    </table>
+  </section>
+}
+
+@if showTimeline {
+  <div class="ws-debugbar-tabs" role="tablist" aria-label="WebScript devtools">
+    <button type="button" role="tab" aria-selected="false" @click={selectTimings}>Timings</button>
+    <button type="button" role="tab" aria-selected="true" @click={selectTimeline}>Async Timeline</button>
+    <button type="button" role="tab" aria-selected="false" @click={selectQueries}>Queries</button>
+  </div>
+  <section class="ws-debugbar-tabpanel" role="tabpanel">
+    @if tasks.length > 0 {
+      <div class="ws-debugbar-gantt">
+        <div class="ws-debugbar-gantt-axis">
+          <div></div>
+          <div class="ws-debugbar-gantt-axis-track">
+            @for tick in ticks {
+              <span class="ws-debugbar-gantt-tick" style={tick.style}>{tick.label}</span>
+            }
+          </div>
+        </div>
+        @for task in tasks {
+          <div class="ws-debugbar-gantt-row">
+            <div class="ws-debugbar-gantt-label" title={task.title}>{task.label}</div>
+            <div class="ws-debugbar-gantt-track">
+              <div class={"ws-debugbar-gantt-bar " + task.cssClass} style={task.style} title={task.title}></div>
+            </div>
+          </div>
+        }
+      </div>
+    } @else {
+      <p class="ws-debugbar-empty">No async tasks recorded.</p>
+    }
+  </section>
+}
+
+@if showQueries {
+  <div class="ws-debugbar-tabs" role="tablist" aria-label="WebScript devtools">
+    <button type="button" role="tab" aria-selected="false" @click={selectTimings}>Timings</button>
+    <button type="button" role="tab" aria-selected="false" @click={selectTimeline}>Async Timeline</button>
+    <button type="button" role="tab" aria-selected="true" @click={selectQueries}>Queries</button>
+  </div>
+  <section class="ws-debugbar-tabpanel" role="tabpanel">
+    @if queries.length > 0 {
+      <table>
+        <thead>
+          <tr><th>Time</th><th>Source</th><th>SQL</th><th>Params</th><th>Status</th></tr>
+        </thead>
+        <tbody>
+          @for query in queries {
+            <tr>
+              <td>{query.duration} ms</td>
+              <td>{query.source}</td>
+              <td class="ws-debugbar-sql">{query.sql}</td>
+              <td class="ws-debugbar-detail">{query.params}</td>
+              <td>{query.status}</td>
+            </tr>
+            @if query.error != "" {
+              <tr>
+                <td></td>
+                <td colspan="4" class="ws-debugbar-error">{query.error}</td>
+              </tr>
+            }
+          }
+        </tbody>
+      </table>
+    } @else {
+      <p class="ws-debugbar-empty">No database queries recorded.</p>
+    }
+  </section>
+}
+
+@style {
+  .ws-debugbar-tabs {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+    border-bottom: 1px solid #3a3b3f;
+  }
+
+  .ws-debugbar-tabs button {
+    appearance: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    background: transparent;
+    color: #c4c7c5;
+    cursor: pointer;
+    font: inherit;
+    padding: 6px 10px;
+  }
+
+  .ws-debugbar-tabs button[aria-selected="true"] {
+    color: #e8eaed;
+    border-bottom-color: #8ab4f8;
+  }
+
+  .ws-debugbar-tabpanel {
+    display: block;
+  }
+
+  .ws-debugbar-empty {
+    margin: 0;
+    color: #9aa0a6;
+    font-style: italic;
+  }
+}

@@ -143,14 +143,20 @@ pub fn validate_value(schema: &SchemaDecl, value: &Value) -> Result<Value, Strin
             if field.optional {
                 continue;
             }
-            return Err(format!("{}.{}: required field is missing", schema.name, field.name));
+            return Err(format!(
+                "{}.{}: required field is missing",
+                schema.name, field.name
+            ));
         }
         let raw = raw.unwrap();
         if is_nullish(raw) {
             if field.optional {
                 continue;
             }
-            return Err(format!("{}.{}: required field is null", schema.name, field.name));
+            return Err(format!(
+                "{}.{}: required field is null",
+                schema.name, field.name
+            ));
         }
         let coerced = coerce_field(field, raw)?;
         apply_rules(field, &coerced)?;
@@ -163,9 +169,7 @@ pub fn validate_value(schema: &SchemaDecl, value: &Value) -> Result<Value, Strin
 pub fn parser_value_to_json(value: &Value) -> Result<serde_json::Value, String> {
     match value {
         Value::String(text) => Ok(serde_json::Value::String(text.clone())),
-        Value::Int(number) => Ok(serde_json::Value::Number(
-            serde_json::Number::from(*number),
-        )),
+        Value::Int(number) => Ok(serde_json::Value::Number(serde_json::Number::from(*number))),
         Value::Bool(flag) => Ok(serde_json::Value::Bool(*flag)),
         Value::Object(fields) => {
             let mut output = serde_json::Map::new();
@@ -353,13 +357,17 @@ fn parse_field(line: &str, line_number: usize) -> Result<SchemaField, Diagnostic
             "min" => {
                 let args = require_args(&decorator, line_number)?;
                 field.rules.push(SchemaRule::Min(parse_numeric_arg(
-                    args, line_number, "min",
+                    args,
+                    line_number,
+                    "min",
                 )?));
             }
             "max" => {
                 let args = require_args(&decorator, line_number)?;
                 field.rules.push(SchemaRule::Max(parse_numeric_arg(
-                    args, line_number, "max",
+                    args,
+                    line_number,
+                    "max",
                 )?));
             }
             "email" => {
@@ -408,15 +416,15 @@ fn coerce_field(field: &SchemaField, value: &Value) -> Result<Value, String> {
                 other.type_name()
             )),
         },
-        "int" => coerce_int(value).map(Value::Int).map_err(|error| {
-            format!("{}.{}: {}", "schema", field.name, error)
-        }),
+        "int" => coerce_int(value)
+            .map(Value::Int)
+            .map_err(|error| format!("{}.{}: {}", "schema", field.name, error)),
         "float" => coerce_float(value)
             .map(|value| Value::Int(value.round() as i64))
             .map_err(|error| format!("{}.{}: {}", "schema", field.name, error)),
-        "bool" => coerce_bool(value).map(Value::Bool).map_err(|error| {
-            format!("{}.{}: {}", "schema", field.name, error)
-        }),
+        "bool" => coerce_bool(value)
+            .map(Value::Bool)
+            .map_err(|error| format!("{}.{}: {}", "schema", field.name, error)),
         other => Err(format!(
             "{}.{}: unsupported schema type `{other}`",
             "schema", field.name
@@ -502,7 +510,10 @@ fn apply_email_rule(field: &SchemaField, value: &Value) -> Result<(), String> {
 fn numeric_value(value: &Value) -> Result<i64, String> {
     match value {
         Value::Int(value) => Ok(*value),
-        other => Err(format!("expected numeric value, found `{}`", other.type_name())),
+        other => Err(format!(
+            "expected numeric value, found `{}`",
+            other.type_name()
+        )),
     }
 }
 
@@ -522,9 +533,14 @@ fn is_nullish(value: &Value) -> bool {
 }
 
 fn parse_numeric_arg(args: &str, line_number: usize, name: &str) -> Result<i64, Diagnostic> {
-    args.trim()
-        .parse::<i64>()
-        .map_err(|_| parse_error(line_number, 1, args.len().max(1), format!("@{name} expects a number")))
+    args.trim().parse::<i64>().map_err(|_| {
+        parse_error(
+            line_number,
+            1,
+            args.len().max(1),
+            format!("@{name} expects a number"),
+        )
+    })
 }
 
 fn parse_decorators(source: &str, line_number: usize) -> Result<Vec<Decorator>, Diagnostic> {

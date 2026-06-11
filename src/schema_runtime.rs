@@ -105,10 +105,7 @@ mod tests {
         fs::create_dir_all(root.join("app/schemas")).expect("schemas dir");
         let runtime = SchemaRuntime::new(root.clone()).expect("runtime");
         let error = runtime
-            .validate(
-                "Missing",
-                Value::Object(BTreeMap::new()),
-            )
+            .validate("Missing", Value::Object(BTreeMap::new()))
             .expect_err("missing");
         assert!(error.contains("unknown schema"));
 

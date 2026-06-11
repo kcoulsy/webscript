@@ -87,6 +87,53 @@ test.describe("type checking (web check)", () => {
     await workspace.dispose();
   });
 
+  test("accepts string literal union props", async ({}, testInfo) => {
+    const workspace = await createWorkspace(testInfo);
+    await workspace.assertCheckOk();
+
+    await workspace.write(
+      "app/components/Button.web",
+      '@component Button {\n  variant: "primary" | "secondary" = "primary"\n  kind: "icon" = "icon"\n}\n\n<button>{variant}</button>\n',
+    );
+    await workspace.write(
+      "app/pages/literal-union.web",
+      '@page "/literal-union"\n\n<main>\n<Button variant="secondary" kind="icon" />\n<Button />\n</main>\n',
+    );
+    await workspace.assertCheckOk();
+
+    await workspace.dispose();
+  });
+
+  test("rejects string literal union prop mismatch", async ({}, testInfo) => {
+    const workspace = await createWorkspace(testInfo);
+    await workspace.assertCheckOk();
+
+    await workspace.write(
+      "app/components/Button.web",
+      '@component Button {\n  variant: "primary" | "secondary" = "primary"\n}\n\n<button>{variant}</button>\n',
+    );
+    await workspace.write(
+      "app/pages/bad-literal-union.web",
+      '@page "/bad-literal-union"\n\n<Button variant="ghost" />\n',
+    );
+    await workspace.assertCheckFails(/expects `"primary" \| "secondary"`/);
+
+    await workspace.dispose();
+  });
+
+  test("rejects string literal union default mismatch", async ({}, testInfo) => {
+    const workspace = await createWorkspace(testInfo);
+    await workspace.assertCheckOk();
+
+    await workspace.write(
+      "app/components/BadButton.web",
+      '@component BadButton {\n  variant: "primary" | "secondary" = "ghost"\n}\n\n<button>{variant}</button>\n',
+    );
+    await workspace.assertCheckFails(/expected `"primary" \| "secondary"`/);
+
+    await workspace.dispose();
+  });
+
   test("rejects @if non-bool condition", async ({}, testInfo) => {
     const workspace = await createWorkspace(testInfo);
     await workspace.assertCheckOk();

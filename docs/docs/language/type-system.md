@@ -19,6 +19,19 @@ duration
 bytes
 ```
 
+## String Literal Types
+
+Use string literal types to restrict a value to one allowed string, or a small inline union of strings:
+
+```web
+@component Button {
+  variant: "primary" | "secondary" = "primary"
+  type: "button" | "submit" | "reset" = "button"
+}
+```
+
+Only double-quoted string literals are supported in type positions. Named aliases for literal unions are not part of this version.
+
 ## Nullable Types
 
 ```web
@@ -101,6 +114,14 @@ Example:
 }
 ```
 
+Props can also use string literal unions:
+
+```web
+@component Badge {
+  tone: "info" | "success" | "warning" = "info"
+}
+```
+
 ## Session Types
 
 ```web
@@ -164,4 +185,3 @@ The compiler should catch:
 - Invalid response return types.
 - Invalid form input shapes.
 - Server-only values used in `@client`.
-

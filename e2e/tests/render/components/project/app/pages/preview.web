@@ -2,6 +2,6 @@
 
 <main>
   <h1>Post preview</h1>
-  <PostPreview title="Launch day" rank={1} featured={true} />
+  <PostPreview title="Launch day" variant="compact" rank={1} featured={true} />
   <PostPreview title="Draft notes" rank={2} featured={false} />
 </main>

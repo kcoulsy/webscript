@@ -102,7 +102,10 @@ fn expect_string(args: &[Value], index: usize, name: &str) -> Result<String, Str
     }
 }
 
-fn expect_query_params(args: &[Value], method: &str) -> Result<Vec<rusqlite::types::Value>, String> {
+fn expect_query_params(
+    args: &[Value],
+    method: &str,
+) -> Result<Vec<rusqlite::types::Value>, String> {
     if args.len() <= 1 {
         return Ok(Vec::new());
     }
@@ -190,10 +193,7 @@ mod tests {
                     Value::String("INSERT INTO Todo (title, done) VALUES (?1, ?2)".to_string()),
                     Value::Array {
                         element_type: "object".to_string(),
-                        values: vec![
-                            Value::String("Ship it".to_string()),
-                            Value::Bool(false),
-                        ],
+                        values: vec![Value::String("Ship it".to_string()), Value::Bool(false)],
                     },
                 ],
             )
@@ -246,10 +246,7 @@ mod tests {
             .expect("insert");
 
         let result = runtime
-            .call(
-                "execute",
-                &[Value::String("DELETE FROM Todo".to_string())],
-            )
+            .call("execute", &[Value::String("DELETE FROM Todo".to_string())])
             .expect("delete");
         let Value::Object(fields) = result else {
             panic!("expected object");
@@ -272,10 +269,7 @@ mod tests {
                     Value::String("INSERT INTO Todo (title, done) VALUES (?1, ?2)".to_string()),
                     Value::Array {
                         element_type: "object".to_string(),
-                        values: vec![
-                            Value::String("Active".to_string()),
-                            Value::Bool(false),
-                        ],
+                        values: vec![Value::String("Active".to_string()), Value::Bool(false)],
                     },
                 ],
             )
@@ -287,10 +281,7 @@ mod tests {
                     Value::String("INSERT INTO Todo (title, done) VALUES (?1, ?2)".to_string()),
                     Value::Array {
                         element_type: "object".to_string(),
-                        values: vec![
-                            Value::String("Done".to_string()),
-                            Value::Bool(true),
-                        ],
+                        values: vec![Value::String("Done".to_string()), Value::Bool(true)],
                     },
                 ],
             )

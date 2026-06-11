@@ -1,13 +1,15 @@
 @component PostPreview {
   title: string
+  variant: "default" | "compact" = "default"
   rank: int = 0
   featured: bool = false
 }
 
-<article class="post-preview">
+<article class={"post-preview " + variant}>
   @if featured {
     <UI.Badge text="Featured" />
   }
   <h3>{title}</h3>
+  <p>Variant {variant}</p>
   <p>Rank {rank}</p>
 </article>

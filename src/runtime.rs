@@ -1,13 +1,14 @@
-use crate::debugbar::{TaskKind, TaskTrace};
+use crate::db_runtime::DbRuntime;
+use crate::debugbar::{QuerySource, TaskKind, TaskTrace};
 use crate::diagnostic::{Diagnostic, Span};
 use crate::expr;
-use crate::db_runtime::DbRuntime;
 use crate::model_runtime::ModelRuntime;
 use crate::parser::Value;
-use crate::schema::json_value_to_parser;
 use crate::schema::is_schema_name;
+use crate::schema::json_value_to_parser;
 use crate::schema_runtime::SchemaRuntime;
 use crate::stmt::{self, error_value, AssignTarget, BlockOutcome, Statement, StmtResult, WebError};
+use crate::types;
 use async_recursion::async_recursion;
 use reqwest::Client;
 use std::collections::BTreeMap;
@@ -150,7 +151,7 @@ impl WebRuntime {
                     Err(error) => return Ok(ExecuteResult::Thrown(error)),
                 };
                 if let Some(type_name) = type_name {
-                    if !type_names_match(&value.type_name(), type_name) {
+                    if !types::value_matches_type(&value, type_name) {
                         return Err(type_mismatch(*line, *column, type_name, &value.type_name()));
                     }
                 }
@@ -328,11 +329,7 @@ impl WebRuntime {
                     target.clone(),
                 )))
             }
-            Statement::ExprStmt {
-                expr,
-                line,
-                column,
-            } => {
+            Statement::ExprStmt { expr, line, column } => {
                 match self
                     .evaluate_statement_expr(expr, scope, session, *line, *column, inside_try)
                     .await?
@@ -454,15 +451,16 @@ impl WebRuntime {
                 .into());
             };
             let label = db_task_label(&method, &evaluated_args);
+            let (sql, params) = db_query_parts(&evaluated_args);
+            let trace = self.trace.clone();
             let id = self
-                .insert_future(
-                    label,
-                    TaskKind::Db,
-                    async move {
-                        db.call(&method, &evaluated_args)
-                            .map_err(|error| WebError { message: error })
-                    },
-                )
+                .insert_future(label.clone(), TaskKind::Db, async move {
+                    let query_index =
+                        begin_query(trace.as_ref(), label, QuerySource::Raw, sql, params);
+                    let result = db.call(&method, &evaluated_args);
+                    finish_query(trace.as_ref(), query_index, &result);
+                    result.map_err(|error| WebError { message: error })
+                })
                 .await;
             return Ok(Value::Promise { id });
         }
@@ -477,16 +475,13 @@ impl WebRuntime {
                 .into());
             };
             let label = format!("{model}.{method}");
+            let trace = self.trace.clone();
             let id = self
-                .insert_future(
-                    label,
-                    TaskKind::Model,
-                    async move {
-                        models
-                            .call(&model, &method, &evaluated_args)
-                            .map_err(|error| WebError { message: error })
-                    },
-                )
+                .insert_future(label, TaskKind::Model, async move {
+                    models
+                        .call_with_trace(&model, &method, &evaluated_args, trace.as_ref())
+                        .map_err(|error| WebError { message: error })
+                })
                 .await;
             return Ok(Value::Promise { id });
         }
@@ -610,8 +605,8 @@ impl WebRuntime {
                 None,
             )
         })?;
-        let url_value = Box::pin(self.evaluate_expr_inner(&args[0], scope, session, line, column))
-            .await?;
+        let url_value =
+            Box::pin(self.evaluate_expr_inner(&args[0], scope, session, line, column)).await?;
         let Value::String(url) = url_value else {
             return Err(Diagnostic::error(
                 Span::at(line, column),
@@ -644,13 +639,14 @@ impl WebRuntime {
             )
             .into());
         }
-        let schema_name = schema_ref_name(args.last().expect("checked length")).ok_or_else(|| {
-            Diagnostic::error(
-                Span::at(line, column),
-                "db.query requires a schema as the last argument",
-                None,
-            )
-        })?;
+        let schema_name =
+            schema_ref_name(args.last().expect("checked length")).ok_or_else(|| {
+                Diagnostic::error(
+                    Span::at(line, column),
+                    "db.query requires a schema as the last argument",
+                    None,
+                )
+            })?;
         let Some(db) = self.db.clone() else {
             return Err(Diagnostic::error(
                 Span::at(line, column),
@@ -675,16 +671,16 @@ impl WebRuntime {
         }
 
         let label = db_task_label("query", &evaluated_args);
+        let (sql, params) = db_query_parts(&evaluated_args);
         let schema_name = schema_name.to_string();
+        let trace = self.trace.clone();
         let id = self
-            .insert_future(
-                label,
-                TaskKind::Db,
-                async move {
-                    db.call_query(&evaluated_args, &schema_name)
-                        .map_err(|error| WebError { message: error })
-                },
-            )
+            .insert_future(label.clone(), TaskKind::Db, async move {
+                let query_index = begin_query(trace.as_ref(), label, QuerySource::Raw, sql, params);
+                let result = db.call_query(&evaluated_args, &schema_name);
+                finish_query(trace.as_ref(), query_index, &result);
+                result.map_err(|error| WebError { message: error })
+            })
             .await;
         Ok(Value::Promise { id })
     }
@@ -722,7 +718,8 @@ impl WebRuntime {
                 let json = serde_json::from_str(&body).map_err(|error| WebError {
                     message: format!("invalid JSON response: {error}"),
                 })?;
-                let value = json_value_to_parser(json).map_err(|error| WebError { message: error })?;
+                let value =
+                    json_value_to_parser(json).map_err(|error| WebError { message: error })?;
                 schemas
                     .validate(&schema_name, value)
                     .map_err(|error| WebError { message: error })
@@ -808,12 +805,7 @@ impl WebRuntime {
         Ok(Value::Promise { id })
     }
 
-    async fn insert_future<F>(
-        &self,
-        label: impl Into<String>,
-        kind: TaskKind,
-        future: F,
-    ) -> u64
+    async fn insert_future<F>(&self, label: impl Into<String>, kind: TaskKind, future: F) -> u64
     where
         F: Future<Output = Result<Value, WebError>> + Send + 'static,
     {
@@ -841,10 +833,7 @@ impl WebRuntime {
             result
         };
 
-        self.promises
-            .lock()
-            .await
-            .insert(id, Box::pin(wrapped));
+        self.promises.lock().await.insert(id, Box::pin(wrapped));
         id
     }
 
@@ -950,7 +939,9 @@ fn simple_callee_name(expr: &expr::Expr) -> Option<String> {
 fn db_callee_name(expr: &expr::Expr) -> Option<String> {
     match expr {
         expr::Expr::Path(path)
-            if path.len() == 2 && path[0] == "db" && matches!(path[1].as_str(), "query" | "execute") =>
+            if path.len() == 2
+                && path[0] == "db"
+                && matches!(path[1].as_str(), "query" | "execute") =>
         {
             Some(path[1].clone())
         }
@@ -967,6 +958,51 @@ fn db_task_label(method: &str, args: &[Value]) -> String {
         })
         .unwrap_or("");
     format!("db.{method}(\"{sql}\")")
+}
+
+fn db_query_parts(args: &[Value]) -> (String, Vec<String>) {
+    let sql = args
+        .first()
+        .and_then(|value| match value {
+            Value::String(text) => Some(text.clone()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let params = args
+        .get(1)
+        .and_then(|value| match value {
+            Value::Array { values, .. } => Some(values.iter().map(Value::render).collect()),
+            _ => None,
+        })
+        .unwrap_or_default();
+    (sql, params)
+}
+
+fn begin_query(
+    trace: Option<&Arc<Mutex<TaskTrace>>>,
+    label: String,
+    source: QuerySource,
+    sql: String,
+    params: Vec<String>,
+) -> Option<usize> {
+    trace.and_then(|trace| {
+        trace
+            .lock()
+            .ok()
+            .map(|mut guard| guard.begin_query(label, source, sql, params))
+    })
+}
+
+fn finish_query(
+    trace: Option<&Arc<Mutex<TaskTrace>>>,
+    query_index: Option<usize>,
+    result: &Result<Value, String>,
+) {
+    if let (Some(trace), Some(query_index)) = (trace, query_index) {
+        if let Ok(mut guard) = trace.lock() {
+            guard.finish_query(query_index, result.is_ok(), result.as_ref().err().cloned());
+        }
+    }
 }
 
 fn schema_ref_name(expr: &expr::Expr) -> Option<&str> {
@@ -1070,32 +1106,6 @@ fn type_mismatch(line: usize, column: usize, expected: &str, found: &str) -> Dia
     )
 }
 
-fn type_names_match(actual: &str, expected: &str) -> bool {
-    if actual == expected {
-        return true;
-    }
-
-    if is_object_type_name(expected) {
-        return actual == "object" || actual.starts_with('{');
-    }
-
-    if let (Some(actual_element), Some(expected_element)) =
-        (actual.strip_suffix("[]"), expected.strip_suffix("[]"))
-    {
-        return type_names_match(actual_element, expected_element);
-    }
-
-    actual.starts_with('{') && expected.starts_with('{') && actual == expected
-}
-
-fn is_object_type_name(type_name: &str) -> bool {
-    type_name == "object"
-        || type_name
-            .chars()
-            .next()
-            .is_some_and(|char| char.is_ascii_uppercase())
-}
-
 impl Default for WebRuntime {
     fn default() -> Self {
         Self::new()
@@ -1106,6 +1116,7 @@ impl Default for WebRuntime {
 mod tests {
     use super::*;
     use crate::expr;
+    use std::sync::{Arc, Mutex};
 
     #[tokio::test]
     async fn sleep_resolves() {
@@ -1147,12 +1158,10 @@ mod tests {
         db::migrate(&root).expect("migrate");
 
         let runtime = WebRuntime::with_database(root.clone()).expect("runtime");
-        let expression = expr::parse(
-            "await db.query(\"SELECT 1 AS n\", CountRow)",
-            1,
-            1,
-        )
-        .expect("parse");
+        let trace = Arc::new(Mutex::new(TaskTrace::new()));
+        let runtime = runtime.for_request(Arc::clone(&trace));
+        let expression =
+            expr::parse("await db.query(\"SELECT 1 AS n\", CountRow)", 1, 1).expect("parse");
         let scope = Env::new();
         let session = BTreeMap::new();
         let value = runtime
@@ -1172,6 +1181,14 @@ mod tests {
             panic!("expected object row");
         };
         assert_eq!(fields.get("n"), Some(&Value::Int(1)));
+
+        let trace = trace.lock().expect("trace");
+        assert_eq!(trace.queries().len(), 1);
+        let query = &trace.queries()[0];
+        assert_eq!(query.source, QuerySource::Raw);
+        assert_eq!(query.sql, "SELECT 1 AS n");
+        assert!(query.success);
+        assert!(query.duration_ms >= 1);
 
         let _ = fs::remove_dir_all(root);
     }
